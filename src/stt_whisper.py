@@ -9,8 +9,8 @@ import numpy as np
 class FastSTT:
     def __init__(self, cfg):
         self.model_size = cfg["model_size"]
-        self.compute_type = cfg["compute_type"]
-        self.device = "cpu"  # faster-whisper handles Metal acceleration on Apple Silicon
+        self.compute_type = cfg.get("compute_type", "float16")
+        self.device = cfg.get("device", "cuda")  # "cuda" for NVIDIA GPU, "cpu" for CPU
 
         # Initialize model
         self.model = WhisperModel(

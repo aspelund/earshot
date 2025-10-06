@@ -11,9 +11,9 @@ network:
   auth_token: null  # Optional authentication token
 
 vad:
-  threshold: 0.40 # Lower = more sensitive (was 0.45)
+  threshold: 0.35 # Lower = more sensitive (catch speech earlier)
   ema_alpha: 0.25 # Lower = smoother, less reactive to spikes
-  pre_ms: 400 # Generous pre-padding
+  pre_ms: 600 # Extra pre-padding to capture initial sounds
   hang_ms: 700 # Wait 700ms of silence before cutting
   post_ms: 400 # Generous post-padding (note: now captures all hangover frames)
   max_segment_s: 30 # Allow longer segments
@@ -21,7 +21,8 @@ vad:
 
 stt:
   model_size: "medium"     # Multilingual, high accuracy
-  compute_type: "int8"     # Quantized for speed
+  device: "cuda"           # "cuda" for GPU, "cpu" for CPU
+  compute_type: "float16"  # "float16" for GPU, "int8" for CPU
   language: null           # Auto-detect language (or set to "en", "sv", etc.)
   beam_size: 1             # Greedy decoding for speed
   word_timestamps: true

@@ -11,4 +11,4 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 export LD_LIBRARY_PATH="$PROJECT_DIR/.venv/lib/python3.12/site-packages/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
 
 # Use the venv python
-"$PROJECT_DIR/.venv/bin/python" -m src.main
+"$PROJECT_DIR/.venv/bin/python" -m src.main_whisper_server
