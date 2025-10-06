@@ -72,12 +72,13 @@ class WhisperServer:
                         header = json.loads(header_bytes.decode('utf-8'))
                         start_iso = header.get("start_utc")
                         end_iso = header.get("end_utc")
+                        language = header.get("language")  # Optional language hint from client
 
                         duration_s = len(pcm_bytes) / 2 / 16000
-                        logger.info(f"Received segment from {client_addr}: {duration_s:.2f}s, transcribing...")
+                        logger.info(f"Received segment from {client_addr}: {duration_s:.2f}s, language={language or 'auto'}, transcribing...")
 
                         # Transcribe the segment
-                        result = await self.stt_handler(pcm_bytes, start_iso, end_iso)
+                        result = await self.stt_handler(pcm_bytes, start_iso, end_iso, language)
 
                         # Send result back to client
                         await websocket.send(json.dumps(result))

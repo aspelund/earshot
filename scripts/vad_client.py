@@ -18,13 +18,14 @@ from datetime import datetime, timezone
 
 
 class VADClient:
-    def __init__(self, config_path: str, server_url: str, auth_token: str = None):
+    def __init__(self, config_path: str, server_url: str, auth_token: str = None, language: str = None):
         # Load config
         with open(config_path, "r") as f:
             self.cfg = yaml.safe_load(f)
 
         self.server_url = server_url
         self.auth_token = auth_token
+        self.language = language  # Optional language hint for server
 
         # Audio config
         self.sample_rate = self.cfg["audio"]["sample_rate"]
@@ -93,6 +94,11 @@ class VADClient:
             "start_utc": start_iso,
             "end_utc": end_iso
         }
+
+        # Add language hint if specified
+        if self.language:
+            header["language"] = self.language
+
         header_bytes = json.dumps(header).encode('utf-8')
         header_len = len(header_bytes)
 
@@ -211,13 +217,18 @@ def main():
         "--auth-token",
         help="Optional authentication token"
     )
+    parser.add_argument(
+        "--language",
+        help="Language code for transcription (e.g., 'en', 'sv', 'es'). If not specified, uses server default."
+    )
 
     args = parser.parse_args()
 
     client = VADClient(
         config_path=args.config,
         server_url=args.server,
-        auth_token=args.auth_token
+        auth_token=args.auth_token,
+        language=args.language
     )
 
     try:

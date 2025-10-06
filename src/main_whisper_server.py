@@ -31,12 +31,19 @@ def main():
     # Thread pool for STT processing (so async handlers don't block)
     executor = ThreadPoolExecutor(max_workers=4)
 
-    async def stt_handler(pcm_bytes: bytes, start_iso: str, end_iso: str) -> dict:
+    async def stt_handler(pcm_bytes: bytes, start_iso: str, end_iso: str, language: str = None) -> dict:
         """
         Transcribe a pre-segmented audio chunk.
         Called from async WebSocket handler - runs STT in thread pool.
+
+        Args:
+            language: Optional language code from client (e.g., "en", "sv").
+                      Falls back to config if None.
         """
         loop = asyncio.get_event_loop()
+
+        # Use client language hint if provided, otherwise fall back to config
+        target_language = language if language else cfg["stt"]["language"]
 
         # Run STT in thread pool to avoid blocking the event loop
         t0 = time.perf_counter()
@@ -44,7 +51,7 @@ def main():
             executor,
             stt.transcribe,
             pcm_bytes,
-            cfg["stt"]["language"],
+            target_language,
             cfg["stt"]["beam_size"],
             cfg["stt"]["word_timestamps"]
         )
