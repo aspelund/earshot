@@ -1,7 +1,11 @@
 """
-Wire: Mic -> TEN VAD -> Segmentor -> STT -> JSONL logger (+ heartbeat).
+Wire: Audio Source -> TEN VAD -> Segmentor -> STT -> JSONL logger (+ heartbeat).
 All real-time work must not block the audio callback.
 STT runs in a separate worker thread with a queue.
+
+Audio sources:
+- MicStream: Local microphone capture
+- NetworkStream: Receive audio from remote client via WebSocket
 """
 import os
 import yaml
@@ -9,7 +13,8 @@ import time
 import threading
 from queue import Queue
 from dotenv import load_dotenv
-from .audio import MicStream
+from .audio_network import NetworkStream
+from .stream_server import AudioStreamServer
 from .vad_ten import TenVAD
 from .segmentor import Segmentor
 from .stt_whisper import FastSTT
@@ -34,7 +39,38 @@ def main():
 
     # Init components
     print("Initializing components...")
-    mic = MicStream(cfg["audio"]["sample_rate"], cfg["audio"]["channels"], cfg["audio"]["frame_ms"])
+
+    # Select audio source based on config
+    audio_source = cfg["audio"].get("source", "mic")
+
+    if audio_source == "network":
+        # Create network stream and start WebSocket server
+        print("Audio source: Network stream")
+        audio_stream = NetworkStream(
+            cfg["audio"]["sample_rate"],
+            cfg["audio"]["channels"],
+            cfg["audio"]["frame_ms"]
+        )
+
+        # Start WebSocket server to receive audio
+        server_host = cfg["network"].get("host", "0.0.0.0")
+        server_port = cfg["network"].get("port", 8765)
+        auth_token = cfg["network"].get("auth_token")
+
+        stream_server = AudioStreamServer(server_host, server_port, audio_stream, auth_token)
+        stream_server.run_in_thread()
+        print(f"WebSocket server listening on ws://{server_host}:{server_port}")
+
+    else:
+        # Use local microphone (lazy import to avoid PortAudio dependency when not needed)
+        print("Audio source: Local microphone")
+        from .audio import MicStream
+        audio_stream = MicStream(
+            cfg["audio"]["sample_rate"],
+            cfg["audio"]["channels"],
+            cfg["audio"]["frame_ms"]
+        )
+
     vad = TenVAD(cfg["vad"]["model_path"])
     seg = Segmentor(cfg)
     stt = FastSTT(cfg["stt"])
@@ -104,7 +140,7 @@ def main():
 
     # Main loop (never blocks on STT)
     try:
-        for frame in mic.frames():
+        for frame in audio_stream.frames():
             p = vad.prob_speech(frame)  # float 0..1
             flush = seg.update(frame, p)
 
@@ -118,7 +154,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\nShutting down...")
-        mic.close()
+        audio_stream.close()
         segment_queue.put(None)  # Stop worker thread
 
 

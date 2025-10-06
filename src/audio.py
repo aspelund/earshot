@@ -5,14 +5,12 @@ import sounddevice as sd
 import numpy as np
 from typing import Iterator
 from queue import Queue
+from .audio_base import AudioSource
 
 
-class MicStream:
+class MicStream(AudioSource):
     def __init__(self, sample_rate: int, channels: int, frame_ms: int):
-        self.sample_rate = sample_rate
-        self.channels = channels
-        self.frame_ms = frame_ms
-        self.frame_samples = int(sample_rate * frame_ms / 1000)
+        super().__init__(sample_rate, channels, frame_ms)
         self.queue = Queue()
         self.buffer = np.array([], dtype=np.int16)
 

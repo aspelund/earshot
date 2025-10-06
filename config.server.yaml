@@ -2,10 +2,10 @@ audio:
   sample_rate: 16000
   channels: 1
   frame_ms: 30
-  source: "mic"  # "mic" for local microphone, "network" for streaming
+  source: "network"  # Receive audio from network stream
 
 network:
-  enabled: false
+  enabled: true
   host: "0.0.0.0"  # Listen on all interfaces
   port: 8765
   auth_token: null  # Optional authentication token

@@ -9,14 +9,22 @@ Local, open-weight, real-time speech pipeline for macOS with multilingual suppor
 - **Multilingual**: Supports 99 languages with auto-detection
 - **Smart segmentation**: Pre/post padding, hangover, min duration filtering
 - **JSONL logging**: Structured logs with UTC timestamps + word-level timing
+- **Network streaming**: Stream audio from remote devices (laptop/phone to server)
 - **Daemon mode**: Runs as launchd service at login
 
 ## Setup on New Machine
 
 ### Prerequisites
+
+**For local microphone mode:**
 - macOS (Apple Silicon or Intel)
 - Python 3.9+ (`python3 --version`)
 - Homebrew (optional, for system dependencies)
+
+**For network streaming mode (server without mic):**
+- Linux or macOS
+- Python 3.9+
+- No microphone required (receives audio over network)
 
 ### Installation
 
@@ -71,13 +79,71 @@ python scripts/test_vad.py
 python scripts/test_stt.py
 ```
 
+## Network Streaming Mode
+
+Run the STT pipeline on a server without a microphone by streaming audio from a remote client.
+
+### Server Setup (Linux/macOS without mic)
+
+```bash
+# 1. Use the server config (network audio source)
+cp config.server.yaml config.yaml
+
+# OR manually edit config.yaml:
+# Set audio.source: "network"
+
+# 2. Start the server
+source .venv/bin/activate
+python -m src.main
+
+# Server will listen on ws://0.0.0.0:8765
+```
+
+### Client Setup (device with microphone)
+
+On your laptop, phone, or any device with a microphone:
+
+```bash
+# 1. Install dependencies (only need sounddevice and websockets)
+pip install sounddevice websockets numpy
+
+# 2. Stream audio to server
+python scripts/stream_client.py --server ws://SERVER_IP:8765
+
+# Example: Stream to server at 192.168.1.100
+python scripts/stream_client.py --server ws://192.168.1.100:8765
+```
+
+### Configuration
+
+**Server (`config.yaml` or `config.server.yaml`):**
+```yaml
+audio:
+  source: "network"  # Use network stream instead of microphone
+
+network:
+  host: "0.0.0.0"    # Listen on all interfaces
+  port: 8765         # WebSocket port
+  auth_token: null   # Optional: set to "your-secret-token" for auth
+```
+
+**Client:**
+```bash
+# With authentication
+python scripts/stream_client.py \
+  --server ws://192.168.1.100:8765 \
+  --auth-token your-secret-token
+```
+
 ## Configuration
 
 Edit `config.yaml` to adjust:
+- Audio source (mic vs network)
 - VAD thresholds and timing
 - STT model size (tiny.en, base.en, small.en)
 - Log rotation settings
 - Heartbeat interval
+- Network server settings (host, port, auth)
 
 ## Testing
 
@@ -150,6 +216,23 @@ Each line is a JSON object:
 Change `model_size` in `config.yaml` and restart.
 
 ## Troubleshooting
+
+### Network Streaming Issues
+
+**Server not receiving audio:**
+- Check firewall allows port 8765 (or your configured port)
+- Verify server IP address: `ip addr` (Linux) or `ifconfig` (macOS)
+- Ensure both devices on same network (or port forwarding configured)
+- Check server logs for connection messages
+
+**Client connection refused:**
+- Verify server is running and listening on correct port
+- Test with: `nc -zv SERVER_IP 8765` or `telnet SERVER_IP 8765`
+- Check firewall on server allows incoming connections
+
+**Authentication failed:**
+- Ensure auth_token matches in both server config and client command
+- Token is case-sensitive
 
 ### No audio detected
 - Check microphone permissions: System Settings → Privacy & Security → Microphone
