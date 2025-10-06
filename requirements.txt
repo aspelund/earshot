@@ -1,0 +1,10 @@
+sounddevice>=0.4.6
+numpy>=1.26
+PyYAML>=6.0
+loguru>=0.7
+python-dotenv>=1.0
+webrtcvad>=2.0.10
+onnxruntime>=1.18.0
+ctranslate2>=4.4.0
+faster-whisper>=1.0.0
+pytest>=7.4.0

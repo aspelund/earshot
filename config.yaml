@@ -1,0 +1,27 @@
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_ms: 30
+
+vad:
+  threshold: 0.40 # Lower = more sensitive (was 0.45)
+  ema_alpha: 0.25 # Lower = smoother, less reactive to spikes
+  pre_ms: 400 # Generous pre-padding
+  hang_ms: 700 # Wait 700ms of silence before cutting
+  post_ms: 400 # Generous post-padding (note: now captures all hangover frames)
+  max_segment_s: 30 # Allow longer segments
+  model_path: "./models/ten_vad.onnx"
+
+stt:
+  model_size: "medium"     # Multilingual, high accuracy
+  compute_type: "int8"     # Quantized for speed
+  language: null           # Auto-detect language (or set to "en", "sv", etc.)
+  beam_size: 1             # Greedy decoding for speed
+  word_timestamps: true
+
+logging:
+  dir: "~/stt_logs"
+  file: "asr.jsonl"
+  rotate_mb: 10
+  backups: 5
+  heartbeat_s: 60
