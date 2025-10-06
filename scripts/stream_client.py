@@ -9,6 +9,7 @@ import sounddevice as sd
 import numpy as np
 import argparse
 import sys
+import json
 
 
 class AudioStreamClient:
@@ -33,6 +34,24 @@ class AudioStreamClient:
         except:
             pass  # Queue full, drop frame
 
+    async def receive_transcriptions(self, ws):
+        """Receive and display transcriptions from server."""
+        try:
+            async for message in ws:
+                # Parse JSON transcription result
+                try:
+                    data = json.loads(message)
+                    if data.get("type") == "asr_segment":
+                        # Display transcription
+                        text = data.get("text", "")
+                        latency = data.get("latency_s", 0)
+                        print(f"\n[Transcription] {text}")
+                        print(f"[Latency: {latency:.2f}s]")
+                except json.JSONDecodeError:
+                    print(f"Received non-JSON message: {message}")
+        except Exception as e:
+            print(f"Error receiving transcriptions: {e}")
+
     async def stream_audio(self):
         """Connect to server and stream microphone audio."""
         print(f"Connecting to {self.server_url}...")
@@ -48,6 +67,9 @@ class AudioStreamClient:
             # Start microphone capture
             self.audio_queue = asyncio.Queue(maxsize=100)
 
+            # Start task to receive transcriptions
+            receive_task = asyncio.create_task(self.receive_transcriptions(ws))
+
             with sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=1,
@@ -56,7 +78,8 @@ class AudioStreamClient:
                 callback=self.audio_callback
             ):
                 print(f"Streaming audio at {self.sample_rate}Hz, {self.frame_ms}ms frames...")
-                print("Press Ctrl+C to stop")
+                print("Listening for transcriptions from server...")
+                print("Press Ctrl+C to stop\n")
 
                 try:
                     while True:
@@ -68,6 +91,7 @@ class AudioStreamClient:
 
                 except KeyboardInterrupt:
                     print("\nStopping...")
+                    receive_task.cancel()
 
 
 def main():

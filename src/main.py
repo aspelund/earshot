@@ -42,6 +42,7 @@ def main():
 
     # Select audio source based on config
     audio_source = cfg["audio"].get("source", "mic")
+    stream_server = None  # Will be set if using network mode
 
     if audio_source == "network":
         # Create network stream and start WebSocket server
@@ -126,6 +127,10 @@ def main():
 
             # Print transcription to terminal
             print(out["text"])
+
+            # Broadcast to connected clients if in network mode
+            if stream_server:
+                stream_server.broadcast_transcription(seg_json)
 
             segment_queue.task_done()
 

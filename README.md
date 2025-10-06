@@ -114,6 +114,11 @@ python scripts/stream_client.py --server ws://SERVER_IP:8765
 python scripts/stream_client.py --server ws://192.168.1.100:8765
 ```
 
+**The client will:**
+- Stream your microphone audio to the server
+- Receive and display transcriptions in real-time
+- Show transcription latency for each segment
+
 ### Configuration
 
 **Server (`config.yaml` or `config.server.yaml`):**

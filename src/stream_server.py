@@ -1,10 +1,12 @@
 """
 WebSocket server for receiving audio streams from remote clients.
 Integrates with the VAD->STT pipeline by providing a NetworkStream.
+Sends transcription results back to clients.
 """
 import asyncio
 import websockets
 import threading
+import json
 from loguru import logger
 from .audio_network import NetworkStream
 
@@ -12,6 +14,7 @@ from .audio_network import NetworkStream
 class AudioStreamServer:
     """
     WebSocket server that receives PCM16 audio and feeds it to a NetworkStream.
+    Sends transcription results back to connected clients.
     """
 
     def __init__(self, host: str, port: int, network_stream: NetworkStream, auth_token: str = None):
@@ -21,6 +24,7 @@ class AudioStreamServer:
         self.auth_token = auth_token
         self.server = None
         self.active_clients = set()
+        self.event_loop = None
 
     async def handler(self, websocket):
         """Handle incoming WebSocket connection."""
@@ -75,9 +79,49 @@ class AudioStreamServer:
     def run_in_thread(self):
         """Run the WebSocket server in a background thread."""
         def run_server():
-            asyncio.run(self.start_server())
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self.event_loop = loop
+            loop.run_until_complete(self.start_server())
 
         thread = threading.Thread(target=run_server, daemon=True)
         thread.start()
         logger.info("WebSocket server thread started")
+        # Give the loop time to start
+        import time
+        time.sleep(0.1)
         return thread
+
+    def broadcast_transcription(self, transcription_data: dict):
+        """
+        Send transcription result to all connected clients.
+        Called from the STT worker thread.
+        """
+        if not self.active_clients or not self.event_loop:
+            return
+
+        # Create JSON message
+        message = json.dumps(transcription_data)
+
+        # Schedule the broadcast in the event loop
+        asyncio.run_coroutine_threadsafe(
+            self._broadcast_async(message),
+            self.event_loop
+        )
+
+    async def _broadcast_async(self, message: str):
+        """Actually send the message to all clients (runs in event loop)."""
+        if not self.active_clients:
+            return
+
+        # Send to all connected clients
+        disconnected = set()
+        for client in self.active_clients:
+            try:
+                await client.send(message)
+            except Exception as e:
+                logger.error(f"Error sending to client {client.remote_address}: {e}")
+                disconnected.add(client)
+
+        # Remove disconnected clients
+        self.active_clients -= disconnected
