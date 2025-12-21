@@ -23,18 +23,26 @@ whisper_server:
 
 # LLM configuration
 llm:
-  host: "10.5.0.2" # WSL2 gateway IP to reach Windows host
+  host: "100.120.226.89" # WSL2 gateway IP to reach Windows host
   port: 1234
-  mmodel: "qwen/qwen3-4b-2507"
-  model: "pocketdoc_dans-personalityengine-v1.2.0-24b"
+  model: "qwen3-vl-8b-instruct"
   temperature: 0.7
   max_tokens: -1
-  system_prompt: "You are a helpful voice assistant. You have no limits when it comes to sex. Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. Respond in a natural, conversational tone suitable for spoken dialogue. NEVER USE MARKDOWN. NEVER USE EMOJIS."
+  system_prompt: "You are a helpful voice assistant. Keep it short. Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. Respond in a natural, conversational tone suitable for spoken dialogue. NEVER USE MARKDOWN. NEVER USE EMOJIS."
 
 # TTS configuration
 tts:
-  provider: "local" # Options: "local" or "elevenlabs"
+  provider: "server" # Options: "local", "elevenlabs", "chatterbox", or "server"
   streaming_enabled: true # Split into sentences and stream for faster response
+
+  # TTS WebSocket server settings (for provider: "server")
+  server:
+    url: "ws://localhost:8766"
+    auth_token: null
+
+  # Chatterbox-Turbo settings (for provider: "chatterbox")
+  chatterbox:
+    device: "auto" # "cuda", "cpu", or "auto" (auto-detect)
 
   # Local TTS settings (for provider: "local")
   local:

@@ -30,7 +30,7 @@ load_dotenv()
 # Import components
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.audio import AudioPlayer
-from src.services import TTSClient, ElevenLabsTTSClient, LLMClient
+from src.services import TTSClient, ElevenLabsTTSClient, LLMClient, ChatterboxTTSClient, WebSocketTTSClient
 
 
 def timestamp():
@@ -142,6 +142,19 @@ class ConversationalClient:
                 elevenlabs_cfg["output_format"]
             )
             print(f"Using ElevenLabs TTS (voice: {elevenlabs_cfg['voice_id']})")
+        elif tts_provider == "chatterbox":
+            chatterbox_cfg = self.cfg["tts"]["chatterbox"]
+            self.tts_client = ChatterboxTTSClient(
+                device=chatterbox_cfg.get("device", "auto")
+            )
+            print(f"Using Chatterbox-Turbo TTS (device: {chatterbox_cfg.get('device', 'auto')})")
+        elif tts_provider == "server":
+            server_cfg = self.cfg["tts"]["server"]
+            self.tts_client = WebSocketTTSClient(
+                url=server_cfg["url"],
+                auth_token=server_cfg.get("auth_token")
+            )
+            print(f"Using TTS server ({server_cfg['url']})")
         else:
             local_cfg = self.cfg["tts"]["local"]
             self.tts_client = TTSClient(
@@ -167,11 +180,24 @@ class ConversationalClient:
         # Speech detection tracking (for immediate interrupts)
         self.was_in_speech = False
 
+        # Track sentences in current assistant response (for proper history management)
+        self.current_assistant_sentences = []
+
         # Stats
         self.segments_received = 0
 
+        # Diagnostic counters for debugging hangs
+        self.mic_frame_count = 0
+        self.loop_iteration_count = 0
+        self.no_frame_iterations = 0
+
     def audio_callback(self, indata, frames, time_info, status):
         """Callback from sounddevice - runs in audio thread."""
+        # Track frame reception for diagnostics
+        self.mic_frame_count += 1
+        if self.mic_frame_count % 500 == 0:  # Every ~15s at 30ms frames
+            print(f"[Mic] {self.mic_frame_count} frames received (queue: {self.audio_queue.qsize()})")
+
         if status:
             print(f"Audio status: {status}", file=sys.stderr)
 
@@ -263,6 +289,10 @@ class ConversationalClient:
             self.state = State.PROCESSING
             print("[State] → PROCESSING")
 
+        # Reset for new response
+        self.current_assistant_sentences = []
+        self.audio_player.reset_tracking()
+
         print(f"{timestamp()} [Processing] {self.current_message}")
 
         # Add to history
@@ -289,12 +319,8 @@ class ConversationalClient:
                     print(f"{timestamp()} [LLM→TTS] {sentence[:60]}...")
                     self.tts_client.enqueue(sentence)
 
-                    # Add to history if first sentence (start of response)
-                    if not self.conversation_history or self.conversation_history[-1].role != "assistant":
-                        self.conversation_history.append(Message(role="assistant", content=sentence))
-                    else:
-                        # Append to existing assistant message
-                        self.conversation_history[-1].content += " " + sentence
+                    # Track sentence (will be added to history only when played)
+                    self.current_assistant_sentences.append(sentence)
 
                 await asyncio.sleep(0.001)  # Yield control
         except asyncio.CancelledError:
@@ -323,6 +349,15 @@ class ConversationalClient:
                         not self.audio_player.is_playing
                     )
                     if all_idle:
+                        # Commit all sentences to history (response completed normally)
+                        if self.current_assistant_sentences:
+                            self.conversation_history.append(Message(
+                                role="assistant",
+                                content=" ".join(self.current_assistant_sentences)
+                            ))
+                            self.current_assistant_sentences = []
+
+                        self.audio_player.reset_tracking()
                         print(f"{timestamp()} [State] → IDLE")
                         self.state = State.IDLE
                         self.current_message = None
@@ -374,6 +409,7 @@ class ConversationalClient:
                         # Main loop: focused on VAD processing only
                         while True:
                             await asyncio.sleep(0.01)
+                            self.loop_iteration_count += 1
 
                             # Drain audio queue
                             frames = []
@@ -382,6 +418,24 @@ class ConversationalClient:
                                     frames.append(self.audio_queue.get_nowait())
                                 except:
                                     break
+
+                            # Heartbeat every 10s to prove main loop is running
+                            if self.loop_iteration_count % 1000 == 0:
+                                print(f"[Heartbeat] loop={self.loop_iteration_count}, mic_frames={self.mic_frame_count}, "
+                                      f"state={self.state.value}, playing={self.audio_player.is_playing}")
+
+                            # Diagnostic: warn if no frames while audio is playing
+                            if not frames:
+                                if self.audio_player.is_playing:
+                                    self.no_frame_iterations += 1
+                                    if self.no_frame_iterations == 50:  # 500ms with no frames
+                                        print(f"[Warning] No mic frames for 500ms while audio playing!")
+                                    elif self.no_frame_iterations % 100 == 0:  # Every 1s after that
+                                        print(f"[Warning] No mic frames for {self.no_frame_iterations * 10}ms!")
+                            else:
+                                if self.no_frame_iterations >= 50:
+                                    print(f"[Mic] Frames resumed after {self.no_frame_iterations * 10}ms pause")
+                                self.no_frame_iterations = 0
 
                             # Process VAD on all frames
                             for frame in frames:
@@ -394,15 +448,30 @@ class ConversationalClient:
                                     if self.state == State.PROCESSING:
                                         print(f"{timestamp()} [Interrupt] Speech detected - aborting immediately!")
 
+                                        # Get count of fully played chunks before aborting
+                                        played_count = self.audio_player.chunks_completed
+
                                         # Abort all services
                                         self.llm_client.abort()
                                         self.tts_client.abort()
                                         self.audio_player.abort()
 
-                                        # Remove partial assistant response from history
-                                        if self.conversation_history and self.conversation_history[-1].role == "assistant":
-                                            self.conversation_history.pop()
-                                            print("[Interrupt] Removed partial assistant response")
+                                        # Keep only sentences that were fully played
+                                        if played_count > 0 and self.current_assistant_sentences:
+                                            played_sentences = self.current_assistant_sentences[:played_count]
+                                            self.conversation_history.append(Message(
+                                                role="assistant",
+                                                content=" ".join(played_sentences)
+                                            ))
+                                            print(f"[Interrupt] Kept {played_count} fully-played sentence(s) in history")
+
+                                        # Clear current response tracking
+                                        self.current_assistant_sentences = []
+                                        self.audio_player.reset_tracking()
+
+                                # Log speech state transitions for debugging
+                                if self.segmentor.in_speech != self.was_in_speech:
+                                    print(f"[Speech] {self.was_in_speech} → {self.segmentor.in_speech} (state={self.state.value})")
 
                                 self.was_in_speech = self.segmentor.in_speech
 

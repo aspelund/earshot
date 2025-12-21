@@ -42,11 +42,14 @@ fi
 
 # Check if TTS server is running
 echo -e "${YELLOW}Checking TTS server...${NC}"
-if ! nc -z localhost 3500 2>/dev/null; then
-    echo -e "${RED}Warning: TTS server not running on localhost:3500${NC}"
-    echo "Start your TTS server or update config with correct host"
+if ! nc -z localhost 8766 2>/dev/null; then
+    echo -e "${RED}Error: TTS server not running on localhost:8766${NC}"
+    echo "Start it in another terminal:"
+    echo "  bash scripts/run_tts_server.sh"
     echo
+    exit 1
 fi
+echo -e "${GREEN}✓ TTS server is running${NC}"
 
 # Check PulseAudio for audio playback (WSL2)
 if grep -qi microsoft /proc/version; then

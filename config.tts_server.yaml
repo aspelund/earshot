@@ -1,0 +1,9 @@
+# Configuration for TTS WebSocket server
+
+server:
+  host: "0.0.0.0"
+  port: 8766
+  auth_token: null
+
+tts:
+  device: "auto"  # "cuda", "cpu", or "auto" (auto-detect)
