@@ -1,12 +1,22 @@
-"""Client for LLM (Large Language Model) service"""
+"""
+LLM client with robust cancellation support.
+
+Improvements over original:
+- asyncio.Event for thread-safe cancellation signaling
+- Generation counter to filter stale responses
+- Cancellation checks in streaming loop
+"""
+
 import sys
 import asyncio
 import aiohttp
+import json
+import re
 from typing import Optional, List, Dict
 
 
 class LLMClient:
-    """Single-request LLM client with streaming sentence support"""
+    """LLM client with asyncio.Event cancellation and generation tracking."""
 
     def __init__(self, host: str, port: int, model: str, temperature: float, max_tokens: int):
         self.base_url = f"http://{host}:{port}"
@@ -15,13 +25,19 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.session: Optional[aiohttp.ClientSession] = None
 
-        # Current request state
+        # Request queue (single request at a time)
         self.current_request: Optional[List[Dict[str, str]]] = None
         self.pending_sentences: List[str] = []
 
-        # Control flags
+        # Cancellation via asyncio.Event
+        self.cancel_event = asyncio.Event()
+
+        # Generation counter for filtering stale responses
+        self.generation = 0
+        self.active_generation = 0
+
+        # State tracking
         self.is_generating = False
-        self.should_abort = False
         self._processing_task: Optional[asyncio.Task] = None
         self._started = False
 
@@ -34,7 +50,7 @@ class LLMClient:
             await self.session.close()
 
     def start(self) -> None:
-        """Start the processing loop (call once inside async context)"""
+        """Start the processing loop (call once inside async context)."""
         if not self._started:
             self._processing_task = asyncio.create_task(self._processing_loop())
             self._started = True
@@ -45,15 +61,13 @@ class LLMClient:
         Non-blocking.
         """
         if not self._started:
-            raise RuntimeError("LLMClient not started. Call start() first in async context.")
+            raise RuntimeError("LLMClient not started. Call start() first.")
 
-        # Abort any current request
-        if self.current_request is not None:
-            self.should_abort = True
-
-        # Set new request
+        # Set new request (will be picked up by processing loop)
         self.current_request = messages
-        self.should_abort = False
+
+        # Reset cancellation for new request
+        self.reset_for_new_request()
 
     def get_ready_sentences(self) -> List[str]:
         """
@@ -68,17 +82,34 @@ class LLMClient:
         return result
 
     def is_processing(self) -> bool:
-        """Returns True if currently generating or has pending sentences"""
-        return self.is_generating or len(self.pending_sentences) > 0 or self.current_request is not None
+        """Returns True if currently generating or has pending sentences."""
+        return (
+            self.is_generating or
+            len(self.pending_sentences) > 0 or
+            self.current_request is not None
+        )
 
     def abort(self) -> None:
-        """Cancel current request and clear pending sentences (non-blocking)"""
+        """
+        Atomic abort: increment generation, signal cancellation, clear state.
+        """
+        # 1. Increment generation (invalidates in-flight responses)
+        self.generation += 1
+
+        # 2. Signal cancellation
+        self.cancel_event.set()
+
+        # 3. Clear state
         self.current_request = None
         self.pending_sentences.clear()
-        self.should_abort = True
+
+    def reset_for_new_request(self) -> None:
+        """Reset cancellation state for new request."""
+        self.cancel_event.clear()
+        self.active_generation = self.generation
 
     async def _processing_loop(self):
-        """Background task that processes LLM requests"""
+        """Background task that processes LLM requests."""
         while True:
             try:
                 # Wait for a request
@@ -86,10 +117,11 @@ class LLMClient:
                     await asyncio.sleep(0.01)
                     continue
 
-                # Process the request
+                # Grab the request
                 messages = self.current_request
-                self.current_request = None  # Clear immediately so new requests can come in
+                self.current_request = None
 
+                # Process it
                 await self._generate(messages)
 
             except asyncio.CancelledError:
@@ -100,19 +132,19 @@ class LLMClient:
                 traceback.print_exc()
 
     async def _generate(self, messages: List[Dict[str, str]]):
-        """Generate LLM response with streaming"""
+        """Generate LLM response with streaming and cancellation support."""
         if not self.session:
-            raise RuntimeError("LLMClient not initialized. Use 'async with' context manager.")
+            raise RuntimeError("LLMClient not initialized. Use 'async with' context.")
 
         self.is_generating = True
-        self.should_abort = False
+        gen_at_start = self.active_generation
 
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
-            "stream": True  # Enable streaming
+            "stream": True
         }
 
         try:
@@ -123,10 +155,15 @@ class LLMClient:
             ) as response:
                 response.raise_for_status()
 
-                # Stream the response
                 accumulated_text = ""
+
                 async for line in response.content:
-                    if self.should_abort:
+                    # Check cancellation (via event)
+                    if self.cancel_event.is_set():
+                        break
+
+                    # Check generation (in case abort happened mid-stream)
+                    if gen_at_start != self.generation:
                         break
 
                     # Parse SSE format
@@ -139,7 +176,6 @@ class LLMClient:
                         break
 
                     try:
-                        import json
                         data = json.loads(data_str)
 
                         # Extract content delta
@@ -153,22 +189,29 @@ class LLMClient:
                                 # Check for sentence boundaries
                                 sentences = self._extract_sentences(accumulated_text)
                                 if sentences:
-                                    for sentence in sentences[:-1]:  # All but last (might be incomplete)
+                                    # Emit all complete sentences
+                                    for sentence in sentences[:-1]:
                                         if sentence.strip():
-                                            self.pending_sentences.append(sentence.strip())
-                                    accumulated_text = sentences[-1]  # Keep incomplete part
+                                            # Double-check generation before adding
+                                            if gen_at_start == self.generation:
+                                                self.pending_sentences.append(sentence.strip())
+                                    # Keep incomplete part
+                                    accumulated_text = sentences[-1]
 
                     except json.JSONDecodeError:
                         continue
 
-                # Add any remaining text as final sentence
-                if accumulated_text.strip() and not self.should_abort:
-                    self.pending_sentences.append(accumulated_text.strip())
+                # Add remaining text as final sentence (if not cancelled)
+                if accumulated_text.strip():
+                    if not self.cancel_event.is_set() and gen_at_start == self.generation:
+                        self.pending_sentences.append(accumulated_text.strip())
 
         except asyncio.CancelledError:
             pass
-        except Exception as e:
+        except aiohttp.ClientError as e:
             print(f"LLM API error: {e}", file=sys.stderr)
+        except Exception as e:
+            print(f"LLM error: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
         finally:
@@ -179,8 +222,6 @@ class LLMClient:
         Split text on sentence boundaries.
         Returns list where last item might be incomplete.
         """
-        # Simple sentence splitting on .!?
-        import re
         # Split but keep delimiters
         parts = re.split(r'([.!?]+)', text)
 
@@ -199,7 +240,7 @@ class LLMClient:
         return sentences
 
     async def stop(self):
-        """Stop the processing loop (cleanup)"""
+        """Stop the processing loop (cleanup)."""
         if self._processing_task:
             self._processing_task.cancel()
             try:

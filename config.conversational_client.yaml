@@ -1,4 +1,6 @@
-# Configuration for conversational VAD client with LLM + TTS
+# Configuration for v2 conversational client with robust cancellation
+# Uses servers for: Whisper (transcription), LLM, TTS
+# Local: VAD, audio playback
 
 audio:
   sample_rate: 16000
@@ -8,7 +10,7 @@ audio:
 vad:
   threshold: 0.35
   ema_alpha: 0.25
-  pre_ms: 600
+  pre_ms: 1200          # Increased for better speech start capture
   hang_ms: 1200
   post_ms: 400
   max_segment_s: 30
@@ -19,49 +21,29 @@ vad:
 whisper_server:
   url: "ws://localhost:8765"
   auth_token: null
-  language: "en" # Language code for transcription
+  language: "en"
 
-# LLM configuration
+# LLM server (OpenAI-compatible API)
 llm:
-  host: "100.120.226.89" # WSL2 gateway IP to reach Windows host
+  host: "100.120.226.89"  # WSL2 gateway IP to reach Windows host
   port: 1234
   model: "qwen3-vl-8b-instruct"
   temperature: 0.7
   max_tokens: -1
-  system_prompt: "You are a helpful voice assistant. Keep it short. Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. Respond in a natural, conversational tone suitable for spoken dialogue. NEVER USE MARKDOWN. NEVER USE EMOJIS."
+  system_prompt: "You are a helpful voice assistant. Keep it short, especially the first sentence. Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. Respond in a natural, conversational tone suitable for spoken dialogue. NEVER USE MARKDOWN. NEVER USE EMOJIS. ALWAYS RESPOND IN ENGLISH ONLY - the TTS system only supports English."
 
-# TTS configuration
+# TTS WebSocket server
 tts:
-  provider: "server" # Options: "local", "elevenlabs", "chatterbox", or "server"
-  streaming_enabled: true # Split into sentences and stream for faster response
+  url: "ws://localhost:8766"
+  auth_token: null
+  recv_timeout_ms: 100  # Timeout for recv() to allow cancellation checks
 
-  # TTS WebSocket server settings (for provider: "server")
-  server:
-    url: "ws://localhost:8766"
-    auth_token: null
-
-  # Chatterbox-Turbo settings (for provider: "chatterbox")
-  chatterbox:
-    device: "auto" # "cuda", "cpu", or "auto" (auto-detect)
-
-  # Local TTS settings (for provider: "local")
-  local:
-    host: "localhost" # TTS server accessible on localhost
-    port: 3500
-    endpoint: "/tts-file"
-
-  # ElevenLabs settings (for provider: "elevenlabs")
-  elevenlabs:
-    voice_id: "cgSgspJ2msm6clMCkdW9" # Voice ID from ElevenLabs
-    model_id: "eleven_turbo_v2_5" # Model to use
-    output_format: "mp3_44100_128" # Audio format
-
-# Audio playback
+# Audio playback (local)
 playback:
-  fade_out_duration_ms: 250 # Duration of fade-out when interrupted
-  output_device: null # null = default device, or specify device ID
+  fade_out_duration_ms: 250
+  output_device: null   # null = default device
 
 # Conversation settings
 conversation:
-  max_history: 10 # Maximum number of message pairs to keep in context
-  interrupt_timeout_s: 0.5 # How long to wait after interrupt before processing
+  max_history: 10
+  interrupt_timeout_s: 0.5

@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """
-Conversational VAD Client with LLM + TTS
-Captures speech, transcribes, generates LLM response, and plays back audio.
-Handles interruptions intelligently.
+Conversational Client - Robust cancellation and interrupt handling.
+
+Features:
+- asyncio.Event for thread-safe cancellation signaling
+- Generation counters in all components to filter stale data
+- Timeout-based network calls to break blocking
+- Atomic interrupt handling with queue purging
+
+Uses servers for: Whisper (transcription), LLM, TTS
+Local: VAD, audio playback
 """
+
 import asyncio
 import websockets
 import sounddevice as sd
@@ -14,89 +22,53 @@ import json
 import struct
 import yaml
 import os
-import aiohttp
-import re
-from queue import Queue
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Optional, List, Dict, AsyncIterator
-from dataclasses import dataclass
 import time
+from queue import Queue
+from enum import Enum
+from typing import Optional, List
+from dataclasses import dataclass
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Import components
+# Import components from src
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.audio import AudioPlayer
-from src.services import TTSClient, ElevenLabsTTSClient, LLMClient, ChatterboxTTSClient, WebSocketTTSClient
+from src.services import LLMClient, TTSClient
+
+# VAD and Segmentor (local processing)
+from src.vad_ten import TenVAD
+from src.segmentor import Segmentor
 
 
 def timestamp():
-    """Get current timestamp in ms for logging"""
+    """Get current timestamp in ms for logging."""
     return f"[{time.time()*1000:.0f}]"
 
 
 class State(Enum):
-    """Client state machine states"""
+    """Client state machine states."""
     IDLE = "idle"
     PROCESSING = "processing"
 
 
 @dataclass
 class Message:
-    """Chat message"""
+    """Chat message."""
     role: str  # "user" or "assistant"
     content: str
 
 
-def split_into_sentences(text: str) -> List[str]:
-    """
-    Split text into sentences for streaming TTS.
-    Handles common abbreviations to avoid false splits.
-    """
-    # Replace common abbreviations temporarily
-    text = text.replace("Dr.", "Dr<DOT>")
-    text = text.replace("Mr.", "Mr<DOT>")
-    text = text.replace("Mrs.", "Mrs<DOT>")
-    text = text.replace("Ms.", "Ms<DOT>")
-    text = text.replace("U.S.", "U<DOT>S<DOT>")
-    text = text.replace("U.K.", "U<DOT>K<DOT>")
-    text = text.replace("etc.", "etc<DOT>")
-    text = text.replace("vs.", "vs<DOT>")
-    text = text.replace("e.g.", "e<DOT>g<DOT>")
-    text = text.replace("i.e.", "i<DOT>e<DOT>")
-
-    # Split on sentence boundaries (.!?) followed by space or end
-    sentences = re.split(r'([.!?]+)(?:\s+|$)', text)
-
-    # Recombine sentences with their punctuation
-    result = []
-    for i in range(0, len(sentences) - 1, 2):
-        sentence = sentences[i].strip()
-        punctuation = sentences[i + 1] if i + 1 < len(sentences) else ""
-
-        if sentence:
-            # Restore abbreviations
-            sentence = sentence.replace("<DOT>", ".")
-            combined = (sentence + punctuation).strip()
-            if combined:
-                result.append(combined)
-
-    # Handle any remaining text without punctuation
-    if sentences and sentences[-1].strip():
-        remaining = sentences[-1].strip().replace("<DOT>", ".")
-        if remaining:
-            result.append(remaining)
-
-    return result if result else [text]  # Fallback to original if no splits
-
-
 class ConversationalClient:
     """
-    Main conversational client with VAD, transcription, LLM, TTS, and audio playback.
-    Handles interruptions intelligently.
+    Conversational client with robust interrupt handling.
+
+    Key features:
+    - Global generation counter for invalidating stale data
+    - asyncio.Event based cancellation across all components
+    - Timeout-based network calls
+    - Atomic interrupt with queue purging
     """
 
     def __init__(self, config_path: str):
@@ -109,21 +81,16 @@ class ConversationalClient:
         self.frame_ms = self.cfg["audio"]["frame_ms"]
         self.frame_samples = int(self.sample_rate * self.frame_ms / 1000)
 
-        # Import VAD and Segmentor
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from src.vad_ten import TenVAD
-        from src.segmentor import Segmentor
-
-        # Initialize VAD and Segmentor
+        # Initialize VAD and Segmentor (local, no cancellation needed)
         print("Loading VAD model...")
         self.vad = TenVAD(self.cfg["vad"]["model_path"])
         self.segmentor = Segmentor(self.cfg)
         print("VAD initialized")
 
-        # Audio queue (thread-safe)
+        # Audio queue (thread-safe, for mic input)
         self.audio_queue = Queue(maxsize=500)
 
-        # Clients
+        # Initialize v2 clients with robust cancellation
         self.llm_client = LLMClient(
             self.cfg["llm"]["host"],
             self.cfg["llm"]["port"],
@@ -132,37 +99,16 @@ class ConversationalClient:
             self.cfg["llm"]["max_tokens"]
         )
 
-        # Initialize TTS client based on provider
-        tts_provider = self.cfg["tts"].get("provider", "local")
-        if tts_provider == "elevenlabs":
-            elevenlabs_cfg = self.cfg["tts"]["elevenlabs"]
-            self.tts_client = ElevenLabsTTSClient(
-                elevenlabs_cfg["voice_id"],
-                elevenlabs_cfg["model_id"],
-                elevenlabs_cfg["output_format"]
-            )
-            print(f"Using ElevenLabs TTS (voice: {elevenlabs_cfg['voice_id']})")
-        elif tts_provider == "chatterbox":
-            chatterbox_cfg = self.cfg["tts"]["chatterbox"]
-            self.tts_client = ChatterboxTTSClient(
-                device=chatterbox_cfg.get("device", "auto")
-            )
-            print(f"Using Chatterbox-Turbo TTS (device: {chatterbox_cfg.get('device', 'auto')})")
-        elif tts_provider == "server":
-            server_cfg = self.cfg["tts"]["server"]
-            self.tts_client = WebSocketTTSClient(
-                url=server_cfg["url"],
-                auth_token=server_cfg.get("auth_token")
-            )
-            print(f"Using TTS server ({server_cfg['url']})")
-        else:
-            local_cfg = self.cfg["tts"]["local"]
-            self.tts_client = TTSClient(
-                local_cfg["host"],
-                local_cfg["port"],
-                local_cfg["endpoint"]
-            )
-            print(f"Using local TTS ({local_cfg['host']}:{local_cfg['port']})")
+        # TTS client (server only in v2)
+        recv_timeout = self.cfg["tts"].get("recv_timeout_ms", 100) / 1000.0
+        self.tts_client = TTSClient(
+            url=self.cfg["tts"]["url"],
+            auth_token=self.cfg["tts"].get("auth_token"),
+            recv_timeout=recv_timeout
+        )
+        print(f"Using TTS server ({self.cfg['tts']['url']})")
+
+        # Audio player with generation tracking
         self.audio_player = AudioPlayer(
             self.cfg["playback"]["fade_out_duration_ms"],
             self.cfg["playback"]["output_device"]
@@ -177,58 +123,53 @@ class ConversationalClient:
         # Current message (accumulates during interrupts)
         self.current_message: Optional[str] = None
 
-        # Speech detection tracking (for immediate interrupts)
+        # Speech detection tracking
         self.was_in_speech = False
 
-        # Track sentences in current assistant response (for proper history management)
+        # Track sentences in current response
         self.current_assistant_sentences = []
+
+        # Global generation counter for atomic invalidation
+        self.generation = 0
 
         # Stats
         self.segments_received = 0
-
-        # Diagnostic counters for debugging hangs
         self.mic_frame_count = 0
         self.loop_iteration_count = 0
-        self.no_frame_iterations = 0
 
     def audio_callback(self, indata, frames, time_info, status):
         """Callback from sounddevice - runs in audio thread."""
-        # Track frame reception for diagnostics
         self.mic_frame_count += 1
-        if self.mic_frame_count % 500 == 0:  # Every ~15s at 30ms frames
-            print(f"[Mic] {self.mic_frame_count} frames received (queue: {self.audio_queue.qsize()})")
+        if self.mic_frame_count % 500 == 0:
+            print(f"[Mic] {self.mic_frame_count} frames received")
 
         if status:
             print(f"Audio status: {status}", file=sys.stderr)
 
-        # Convert float32 [-1, 1] to int16 [-32768, 32767]
+        # Convert float32 to int16
         pcm16 = (indata[:, 0] * 32767).astype(np.int16)
 
-        # Put in async queue (non-blocking)
         try:
             self.audio_queue.put_nowait(pcm16)
         except:
             pass  # Drop frame if queue full
 
     def encode_segment(self, pcm_bytes: bytes, start_iso: str, end_iso: str) -> bytes:
-        """Encode segment for transmission to Whisper server"""
+        """Encode segment for transmission to Whisper server."""
         header = {
             "start_utc": start_iso,
             "end_utc": end_iso
         }
 
-        # Add language hint if specified
         language = self.cfg["whisper_server"].get("language")
         if language:
             header["language"] = language
 
         header_bytes = json.dumps(header).encode('utf-8')
-        header_len = len(header_bytes)
-
-        return struct.pack('>I', header_len) + header_bytes + pcm_bytes
+        return struct.pack('>I', len(header_bytes)) + header_bytes + pcm_bytes
 
     async def receive_transcriptions(self, ws):
-        """Receive transcriptions from Whisper server"""
+        """Receive transcriptions from Whisper server."""
         try:
             async for message in ws:
                 try:
@@ -238,53 +179,38 @@ class ConversationalClient:
                         if text:
                             await self.handle_transcription(text)
                 except json.JSONDecodeError:
-                    print(f"Received non-JSON message: {message}")
+                    pass
                 except Exception as e:
                     print(f"Error handling transcription: {e}", file=sys.stderr)
-                    import traceback
-                    traceback.print_exc()
         except Exception as e:
             print(f"Error receiving transcriptions: {e}", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
 
     async def handle_transcription(self, text: str):
-        """Handle incoming transcription based on current state"""
+        """Handle incoming transcription based on current state."""
         self.segments_received += 1
         print(f"\n{timestamp()} [User said] {text}")
 
         if self.state == State.IDLE:
-            # Start new conversation turn
             self.current_message = text
             await self.process_user_message()
 
         elif self.state == State.PROCESSING:
-            # User interrupted - abort already happened in main loop
-            # Just accumulate the message
-            print(f"{timestamp()} [Interrupt] Transcription received during processing")
+            print(f"{timestamp()} [Interrupt] Transcription during processing")
 
-            # Concatenate with current message
             if self.current_message:
                 self.current_message = f"{self.current_message}. {text}"
             else:
                 self.current_message = text
 
-            print(f"[Interrupt] Accumulated message: {self.current_message}")
-
-            # Wait for user to finish speaking (timeout mechanism)
-            # If another transcription comes, it will accumulate further
+            # Wait for user to finish speaking
             await asyncio.sleep(self.cfg["conversation"]["interrupt_timeout_s"])
-
-            # After timeout, process the accumulated message
             await self.process_user_message()
 
     async def process_user_message(self):
-        """Process current_message: enqueue to LLM (main loop handles rest)"""
+        """Process current_message through LLM."""
         if not self.current_message:
-            print("[Warning] process_user_message called with no current_message")
             return
 
-        # Ensure we're in PROCESSING state
         if self.state != State.PROCESSING:
             self.state = State.PROCESSING
             print("[State] → PROCESSING")
@@ -293,12 +219,17 @@ class ConversationalClient:
         self.current_assistant_sentences = []
         self.audio_player.reset_tracking()
 
+        # Reset cancellation state for new turn
+        self.llm_client.reset_for_new_request()
+        self.tts_client.reset_for_new_request()
+        self.audio_player.reset_for_new_turn()
+
         print(f"{timestamp()} [Processing] {self.current_message}")
 
         # Add to history
         self.conversation_history.append(Message(role="user", content=self.current_message))
 
-        # Trim history if too long
+        # Trim history
         if len(self.conversation_history) > self.max_history * 2:
             self.conversation_history = self.conversation_history[-self.max_history * 2:]
 
@@ -307,39 +238,73 @@ class ConversationalClient:
         for msg in self.conversation_history:
             messages.append({"role": msg.role, "content": msg.content})
 
-        # Enqueue to LLM (non-blocking)
         print(f"{timestamp()} [LLM] Request enqueued")
         self.llm_client.enqueue(messages)
 
+    async def _handle_interrupt(self):
+        """
+        Atomic interrupt handler.
+        Called when speech detected during PROCESSING state.
+        """
+        print(f"{timestamp()} [Interrupt] Speech detected - aborting!")
+
+        # 1. Capture state BEFORE abort
+        played_count = self.audio_player.chunks_completed
+
+        # 2. Bump global generation (invalidates all in-flight)
+        self.generation += 1
+
+        # 3. Signal all components to abort
+        self.llm_client.abort()
+        self.tts_client.abort()
+        self.audio_player.abort()
+
+        # 4. Brief pause for queues to drain
+        await asyncio.sleep(0.05)
+
+        # 5. Force purge any stragglers
+        self.audio_player.clear_queue()
+
+        # 6. Update history with only played content
+        if played_count > 0 and self.current_assistant_sentences:
+            played = self.current_assistant_sentences[:played_count]
+            self.conversation_history.append(Message(
+                role="assistant",
+                content=" ".join(played)
+            ))
+            print(f"[Interrupt] Kept {played_count} fully-played sentence(s)")
+
+        # 7. Reset tracking
+        self.current_assistant_sentences = []
+        self.audio_player.reset_tracking()
+
     async def _llm_to_tts_forwarder(self):
-        """Background task: forward LLM sentences to TTS"""
+        """Forward LLM sentences to TTS."""
         try:
             while True:
                 for sentence in self.llm_client.get_ready_sentences():
                     print(f"{timestamp()} [LLM→TTS] {sentence[:60]}...")
                     self.tts_client.enqueue(sentence)
-
-                    # Track sentence (will be added to history only when played)
                     self.current_assistant_sentences.append(sentence)
 
-                await asyncio.sleep(0.001)  # Yield control
+                await asyncio.sleep(0.001)
         except asyncio.CancelledError:
             pass
 
     async def _tts_to_audio_forwarder(self):
-        """Background task: forward TTS audio to AudioPlayer"""
+        """Forward TTS audio to AudioPlayer."""
         try:
             while True:
                 for wav_bytes in self.tts_client.get_ready_audio():
-                    print(f"{timestamp()} [TTS→Audio] Audio chunk ready ({len(wav_bytes)} bytes)")
+                    print(f"{timestamp()} [TTS→Audio] {len(wav_bytes)} bytes")
                     self.audio_player.enqueue(wav_bytes)
 
-                await asyncio.sleep(0.001)  # Yield control
+                await asyncio.sleep(0.001)
         except asyncio.CancelledError:
             pass
 
     async def _state_monitor(self):
-        """Background task: monitor service states and transition to IDLE when done"""
+        """Monitor service states and transition to IDLE when done."""
         try:
             while True:
                 if self.state == State.PROCESSING:
@@ -348,8 +313,9 @@ class ConversationalClient:
                         not self.tts_client.is_processing() and
                         not self.audio_player.is_playing
                     )
+
                     if all_idle:
-                        # Commit all sentences to history (response completed normally)
+                        # Commit all sentences to history
                         if self.current_assistant_sentences:
                             self.conversation_history.append(Message(
                                 role="assistant",
@@ -362,37 +328,38 @@ class ConversationalClient:
                         self.state = State.IDLE
                         self.current_message = None
 
-                await asyncio.sleep(0.01)  # Check every 10ms
+                await asyncio.sleep(0.01)
         except asyncio.CancelledError:
             pass
 
     async def run(self):
-        """Main loop: connect to Whisper server and process audio"""
+        """Main loop."""
         server_url = self.cfg["whisper_server"]["url"]
         auth_token = self.cfg["whisper_server"].get("auth_token")
 
         print(f"Connecting to Whisper server at {server_url}...")
 
-        # Start audio player, TTS client, and LLM client
+        # Start audio player
         self.audio_player.start()
 
         # Initialize clients
         async with self.llm_client, self.tts_client:
             self.llm_client.start()
             self.tts_client.start()
-            async with websockets.connect(server_url, max_size=10*1024*1024) as ws:
-                print(f"Connected to Whisper server")
 
-                # Send auth token if required
+            async with websockets.connect(server_url, max_size=10*1024*1024) as ws:
+                print("Connected to Whisper server")
+
                 if auth_token:
                     await ws.send(auth_token)
-                    print("Sent authentication token")
 
                 # Start background tasks
-                receive_task = asyncio.create_task(self.receive_transcriptions(ws))
-                llm_tts_task = asyncio.create_task(self._llm_to_tts_forwarder())
-                tts_audio_task = asyncio.create_task(self._tts_to_audio_forwarder())
-                state_monitor_task = asyncio.create_task(self._state_monitor())
+                tasks = [
+                    asyncio.create_task(self.receive_transcriptions(ws)),
+                    asyncio.create_task(self._llm_to_tts_forwarder()),
+                    asyncio.create_task(self._tts_to_audio_forwarder()),
+                    asyncio.create_task(self._state_monitor()),
+                ]
 
                 with sd.InputStream(
                     samplerate=self.sample_rate,
@@ -406,7 +373,6 @@ class ConversationalClient:
                     print("Press Ctrl+C to stop\n")
 
                     try:
-                        # Main loop: focused on VAD processing only
                         while True:
                             await asyncio.sleep(0.01)
                             self.loop_iteration_count += 1
@@ -419,98 +385,59 @@ class ConversationalClient:
                                 except:
                                     break
 
-                            # Heartbeat every 10s to prove main loop is running
+                            # Heartbeat with VAD diagnostics
                             if self.loop_iteration_count % 1000 == 0:
-                                print(f"[Heartbeat] loop={self.loop_iteration_count}, mic_frames={self.mic_frame_count}, "
-                                      f"state={self.state.value}, playing={self.audio_player.is_playing}")
+                                print(f"[Heartbeat] loop={self.loop_iteration_count}, "
+                                      f"state={self.state.value}, gen={self.generation}, "
+                                      f"in_speech={self.segmentor.in_speech}, "
+                                      f"prob_ema={self.segmentor.prob_ema:.3f}")
 
-                            # Diagnostic: warn if no frames while audio is playing
-                            if not frames:
-                                if self.audio_player.is_playing:
-                                    self.no_frame_iterations += 1
-                                    if self.no_frame_iterations == 50:  # 500ms with no frames
-                                        print(f"[Warning] No mic frames for 500ms while audio playing!")
-                                    elif self.no_frame_iterations % 100 == 0:  # Every 1s after that
-                                        print(f"[Warning] No mic frames for {self.no_frame_iterations * 10}ms!")
-                            else:
-                                if self.no_frame_iterations >= 50:
-                                    print(f"[Mic] Frames resumed after {self.no_frame_iterations * 10}ms pause")
-                                self.no_frame_iterations = 0
-
-                            # Process VAD on all frames
+                            # Process VAD
                             for frame in frames:
                                 prob = self.vad.prob_speech(frame)
                                 result = self.segmentor.update(frame, prob)
 
-                                # Check if speech just started (immediate interrupt detection)
+                                # Interrupt detection (speech edge)
                                 if self.segmentor.in_speech and not self.was_in_speech:
-                                    # Speech START detected!
                                     if self.state == State.PROCESSING:
-                                        print(f"{timestamp()} [Interrupt] Speech detected - aborting immediately!")
+                                        await self._handle_interrupt()
 
-                                        # Get count of fully played chunks before aborting
-                                        played_count = self.audio_player.chunks_completed
-
-                                        # Abort all services
-                                        self.llm_client.abort()
-                                        self.tts_client.abort()
-                                        self.audio_player.abort()
-
-                                        # Keep only sentences that were fully played
-                                        if played_count > 0 and self.current_assistant_sentences:
-                                            played_sentences = self.current_assistant_sentences[:played_count]
-                                            self.conversation_history.append(Message(
-                                                role="assistant",
-                                                content=" ".join(played_sentences)
-                                            ))
-                                            print(f"[Interrupt] Kept {played_count} fully-played sentence(s) in history")
-
-                                        # Clear current response tracking
-                                        self.current_assistant_sentences = []
-                                        self.audio_player.reset_tracking()
-
-                                # Log speech state transitions for debugging
+                                # Log speech transitions
                                 if self.segmentor.in_speech != self.was_in_speech:
-                                    print(f"[Speech] {self.was_in_speech} → {self.segmentor.in_speech} (state={self.state.value})")
+                                    print(f"[Speech] {self.was_in_speech} → {self.segmentor.in_speech}")
 
                                 self.was_in_speech = self.segmentor.in_speech
 
                                 if result:
-                                    # Segment complete - send to Whisper server
                                     pcm_bytes, start_iso, end_iso = result
                                     duration_s = len(pcm_bytes) / 2 / self.sample_rate
-
-                                    print(f"\n{timestamp()} [VAD] Speech segment detected ({duration_s:.2f}s)")
+                                    print(f"\n{timestamp()} [VAD] Segment ({duration_s:.2f}s)")
 
                                     message = self.encode_segment(pcm_bytes, start_iso, end_iso)
-
                                     try:
                                         await asyncio.wait_for(ws.send(message), timeout=5.0)
                                     except asyncio.TimeoutError:
-                                        print(f"⚠ Timeout sending to Whisper server", file=sys.stderr)
+                                        print("Timeout sending to Whisper", file=sys.stderr)
                                     except Exception as e:
-                                        print(f"⚠ Error sending segment: {e}", file=sys.stderr)
+                                        print(f"Error sending segment: {e}", file=sys.stderr)
 
                     except KeyboardInterrupt:
                         print("\nStopping...")
-                        receive_task.cancel()
-                        llm_tts_task.cancel()
-                        tts_audio_task.cancel()
-                        state_monitor_task.cancel()
+                        for task in tasks:
+                            task.cancel()
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Conversational VAD client with LLM and TTS"
+        description="Conversational client with robust cancellation"
     )
     parser.add_argument(
         "--config",
         default="config.conversational_client.yaml",
-        help="Config file path (default: config.conversational_client.yaml)"
+        help="Config file path"
     )
 
     args = parser.parse_args()
-
     client = ConversationalClient(config_path=args.config)
 
     try:

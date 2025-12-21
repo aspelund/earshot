@@ -1,18 +1,16 @@
 # Conversational Client Architecture
 
-## Version 2 (Recommended)
-
-The v2 client (`scripts/conversational_client_v2.py`) uses improved cancellation handling with:
+The conversational client (`scripts/conversational_client.py`) provides robust voice conversation with:
 - **asyncio.Event** instead of boolean flags for thread-safe signaling
 - **Timeout-based recv()** to break blocking network calls every 100ms
 - **Generation counters** in all components to filter stale data
 - **Atomic interrupt handling** with queue purging
 
 ```bash
-# To run v2:
+# To run:
 bash scripts/run_whisper_server.sh   # Terminal 1
 bash scripts/run_tts_server.sh       # Terminal 2
-bash scripts/start_conversation_v2.sh # Terminal 3
+bash scripts/start_conversation.sh   # Terminal 3
 ```
 
 ---
@@ -174,7 +172,7 @@ self.was_in_speech = self.segmentor.in_speech
 
 Problem: After abort, late TTS audio from the old request could still arrive and play.
 
-Solution: Generation counter in `WebSocketTTSClient`:
+Solution: Generation counter in `TTSClient`:
 
 ```
 Timeline:
@@ -207,7 +205,7 @@ Timeline:
 - Streaming loop checks flag and stops
 - Clears pending sentences
 
-### WebSocketTTSClient.abort()
+### TTSClient.abort()
 - Clears text queue (pending synthesis requests)
 - Sends cancel messages to server for in-flight requests
 - Clears ready audio buffer
