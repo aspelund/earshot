@@ -27,7 +27,7 @@ tts:
 
 llm:
   url: "http://192.168.50.124:1234/v1/chat/completions"
-  model: "qwen3-vl-8b-instruct"
+  model: "qwen/qwen3-4b-2507"
   temperature: 0.7
   system_prompt: |
     You are a helpful voice assistant. Keep it short, especially the first sentence. 

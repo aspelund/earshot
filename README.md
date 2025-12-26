@@ -1,8 +1,74 @@
-# VAD Server
+# Earshot
 
-Local, open-weight, real-time speech pipeline for macOS with multilingual support.
+Local, open-weight, real-time speech-to-speech AI assistant. Fully offline conversational AI using state-of-the-art open models.
+
+## Overview
+
+Earshot is a complete voice assistant stack:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        RUST CLIENT (rust-earshot)                    │
+│  Microphone → VAD → STT Client → LLM Client → TTS Client → Speaker  │
+│                        + GUI + Notifications                         │
+└─────────────────────────────────────────────────────────────────────┘
+        │                                           │
+        ▼                                           ▼
+┌───────────────────┐  ┌───────────────────┐  ┌───────────────────┐
+│   STT Server      │  │   TTS Server      │  │   LLM Server      │
+│ (Parakeet/Whisper)│  │ (Soprano/Chatter) │  │ (LM Studio/Ollama)│
+│   Python/NeMo     │  │   Python/PyTorch  │  │   Your choice     │
+│   Port 8765       │  │   Port 8766       │  │   Port 1234       │
+└───────────────────┘  └───────────────────┘  └───────────────────┘
+```
+
+**Components:**
+- **Rust Client** (`rust-earshot/`): High-performance audio I/O, VAD, and pipeline coordination with GUI
+- **Python STT Server**: Parakeet (NVIDIA NeMo) or faster-whisper for speech-to-text
+- **Python TTS Server**: Soprano (streaming, 64ms latency) or Chatterbox for text-to-speech
+- **LLM**: Any OpenAI-compatible API (LM Studio, Ollama, vLLM, etc.)
 
 ## Features
+
+- **Real-time VAD**: Silero VAD with configurable thresholds
+- **Streaming TTS**: ~64ms time-to-first-audio with Soprano
+- **Interrupt handling**: Speak to interrupt AI mid-response
+- **GUI**: Desktop application with audio level meters
+- **Notifications**: HTTP endpoint for push notifications read aloud
+- **Cross-platform**: Linux and Windows support
+- **Fully local**: No cloud dependencies, runs on consumer hardware
+
+## Quick Start
+
+```bash
+# 1. Clone and setup Python environment
+git clone <repo-url> earshot
+cd earshot
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2. Download models
+python scripts/install_models.py
+
+# 3. Start servers (in separate terminals)
+bash scripts/run_whisper_server.sh   # STT on port 8765
+bash scripts/run_tts_server.sh       # TTS on port 8766
+
+# 4. Start an LLM server (e.g., LM Studio on port 1234)
+
+# 5. Run the Rust client
+cd rust-earshot
+./run.sh
+```
+
+See [`rust-earshot/README.md`](rust-earshot/README.md) for detailed Rust client documentation.
+
+---
+
+# Python Servers
+
+## STT Server Features
 
 - **Real-time VAD**: Silero VAD for accurate speech detection with hysteresis
 - **Async STT**: faster-whisper on worker thread (never blocks audio)
@@ -10,7 +76,13 @@ Local, open-weight, real-time speech pipeline for macOS with multilingual suppor
 - **Smart segmentation**: Pre/post padding, hangover, min duration filtering
 - **JSONL logging**: Structured logs with UTC timestamps + word-level timing
 - **Network streaming**: Stream audio from remote devices (laptop/phone to server)
-- **Daemon mode**: Runs as launchd service at login
+
+## TTS Server Features
+
+- **Soprano backend**: Streaming output with ~64ms latency per chunk
+- **Chatterbox backend**: High-quality batch synthesis
+- **Emoji filtering**: Automatic removal of unspeakable characters
+- **WebSocket API**: Binary audio streaming
 
 ## Setup on New Machine
 

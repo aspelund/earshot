@@ -22,7 +22,7 @@ impl NotificationServer {
 
     /// Run the server (call in tokio::spawn)
     pub async fn run(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
-        let addr = format!("127.0.0.1:{}", self.port);
+        let addr = format!("0.0.0.0:{}", self.port);
         let listener = TcpListener::bind(&addr).await?;
         info!("[Notifications] Server listening on {}", addr);
 

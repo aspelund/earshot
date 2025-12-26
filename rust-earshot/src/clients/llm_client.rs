@@ -210,9 +210,12 @@ impl LlmClient {
             if !self.cancelled.load(Ordering::SeqCst)
                 && gen_at_start == self.generation.load(Ordering::SeqCst)
             {
-                let mut pending = self.pending_sentences.lock().await;
-                pending.push(accumulated_text.trim().to_string());
-                debug!("Added final sentence: {}", accumulated_text.trim());
+                let cleaned = Self::clean_for_tts(accumulated_text.trim());
+                if !cleaned.is_empty() {
+                    let mut pending = self.pending_sentences.lock().await;
+                    pending.push(cleaned.clone());
+                    debug!("Added final sentence: {}", cleaned);
+                }
             }
         }
 
@@ -221,6 +224,26 @@ impl LlmClient {
 
         Ok(())
     }
+
+    /// Count words in a string
+    fn word_count(s: &str) -> usize {
+        s.split_whitespace().count()
+    }
+
+    /// Clean text for TTS - remove markdown formatting and normalize whitespace
+    fn clean_for_tts(s: &str) -> String {
+        s.replace('\n', " ")
+            .replace('*', "")
+            .replace('_', " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Minimum words required for a sentence to be emitted to TTS.
+    /// Short sentences (like "1.", "Sure!", "7B LLM.") are held back and
+    /// combined with the next sentence for better TTS quality.
+    const MIN_SENTENCE_WORDS: usize = 4;
 
     /// Extract complete sentences and add to pending
     async fn extract_and_emit_sentences(&self, text: &mut String, gen_at_start: u64) {
@@ -238,11 +261,23 @@ impl LlmClient {
                     // Found sentence boundary
                     let sentence = text[last_boundary..=i].trim();
                     if !sentence.is_empty() {
+                        // If sentence is too short, don't emit it yet - wait for more
+                        // text to combine with. This helps TTS models handle short
+                        // phrases better (e.g. "1.", "Sure!", "7B LLM.").
+                        let word_count = Self::word_count(sentence);
+                        if word_count < Self::MIN_SENTENCE_WORDS {
+                            debug!("Holding short sentence: \"{}\" ({} words, need {})",
+                                   sentence, word_count, Self::MIN_SENTENCE_WORDS);
+                            // Don't update last_boundary - keep this text for next iteration
+                            continue;
+                        }
+
                         // Check generation before adding
                         if gen_at_start == self.generation.load(Ordering::SeqCst) {
+                            let cleaned = Self::clean_for_tts(sentence);
                             let mut pending = self.pending_sentences.lock().await;
-                            pending.push(sentence.to_string());
-                            debug!("Sentence complete: {}", sentence);
+                            pending.push(cleaned.clone());
+                            debug!("Sentence complete ({} words): {}", word_count, cleaned);
                         }
                     }
                     last_boundary = next_idx;

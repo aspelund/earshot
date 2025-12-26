@@ -5,5 +5,5 @@ mod tts_client;
 mod llm_client;
 
 pub use stt_client::{SttClient, TranscriptionResult};
-pub use tts_client::{TtsClient, TtsResult};
+pub use tts_client::{TtsClient, TtsResult, TtsStreamEvent};
 pub use llm_client::{LlmClient, ChatMessage};

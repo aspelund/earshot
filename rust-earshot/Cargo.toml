@@ -8,6 +8,11 @@ description = "Real-time conversational AI client with VAD, STT, TTS, and LLM"
 name = "earshot"
 path = "src/main.rs"
 
+[features]
+default = ["native-tls"]
+native-tls = ["tokio-tungstenite/native-tls", "reqwest/native-tls"]
+rustls = ["tokio-tungstenite/rustls-tls-native-roots", "reqwest/rustls-tls"]
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full", "sync", "time", "macros", "rt-multi-thread"] }
@@ -20,8 +25,8 @@ ort = { version = "2.0.0-rc.9", features = ["load-dynamic", "ndarray"] }
 ndarray = "0.16"
 
 # Networking
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
-reqwest = { version = "0.12", features = ["stream", "json"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "json"] }
 futures = "0.3"
 futures-util = "0.3"
 
@@ -34,8 +39,14 @@ serde_yaml = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
+
+# GUI
+eframe = "0.31"
+egui = "0.31"
+crossbeam-channel = "0.5"
 
 [profile.release]
 lto = true

@@ -2,4 +2,4 @@
 
 mod conversation;
 
-pub use conversation::run;
+pub use conversation::{run, run_with_gui};

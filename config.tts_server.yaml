@@ -6,4 +6,8 @@ server:
   auth_token: null
 
 tts:
+  backend: "soprano"  # "chatterbox" or "soprano"
   device: "auto"  # "cuda", "cpu", or "auto" (auto-detect)
+  streaming:
+    enabled: true  # Enable streaming mode for Soprano (lower latency)
+    chunk_size: 1  # Tokens per chunk (1 = ~64ms latency)
