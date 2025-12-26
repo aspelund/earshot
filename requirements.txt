@@ -11,8 +11,8 @@ pytest>=7.4.0
 websockets>=12.0
 aiohttp>=3.9.0
 soundfile>=0.12.0
-elevenlabs>=1.0.0
 chatterbox-tts>=0.1.0
+soprano-tts>=0.1.0
 
 # Optional: NVIDIA Parakeet for faster English ASR (5-10x faster than Whisper)
 # Uncomment to install: pip install nemo_toolkit[asr]
