@@ -60,6 +60,25 @@ class Message:
     content: str
 
 
+def sanitize_messages(messages: list) -> list:
+    """
+    Ensure conversation roles alternate between user and assistant.
+    Consecutive messages from the same role are concatenated.
+    """
+    if not messages:
+        return []
+
+    sanitized = []
+    for msg in messages:
+        if sanitized and sanitized[-1]["role"] == msg["role"]:
+            # Concatenate with previous message of same role
+            sanitized[-1]["content"] = f"{sanitized[-1]['content']} {msg['content']}"
+        else:
+            sanitized.append({"role": msg["role"], "content": msg["content"]})
+
+    return sanitized
+
+
 class ConversationalClient:
     """
     Conversational client with robust interrupt handling.
@@ -226,8 +245,17 @@ class ConversationalClient:
 
         print(f"{timestamp()} [Processing] {self.current_message}")
 
-        # Add to history
-        self.conversation_history.append(Message(role="user", content=self.current_message))
+        # Add to history - ensure alternating roles
+        if self.conversation_history and self.conversation_history[-1].role == "user":
+            # Concatenate with previous user message to maintain alternating pattern
+            prev_msg = self.conversation_history[-1]
+            self.conversation_history[-1] = Message(
+                role="user",
+                content=f"{prev_msg.content} {self.current_message}"
+            )
+            print("[History] Merged with previous user message")
+        else:
+            self.conversation_history.append(Message(role="user", content=self.current_message))
 
         # Trim history
         if len(self.conversation_history) > self.max_history * 2:
@@ -237,6 +265,9 @@ class ConversationalClient:
         messages = [{"role": "system", "content": self.system_prompt}]
         for msg in self.conversation_history:
             messages.append({"role": msg.role, "content": msg.content})
+
+        # Sanitize to ensure alternating roles (required by some models)
+        messages = [messages[0]] + sanitize_messages(messages[1:])
 
         print(f"{timestamp()} [LLM] Request enqueued")
         self.llm_client.enqueue(messages)
@@ -387,10 +418,17 @@ class ConversationalClient:
 
                             # Heartbeat with VAD diagnostics
                             if self.loop_iteration_count % 1000 == 0:
+                                # Calculate audio level from recent frames
+                                audio_rms = 0
+                                if frames:
+                                    import numpy as np
+                                    all_audio = np.concatenate(frames)
+                                    audio_rms = np.sqrt(np.mean(all_audio.astype(np.float32)**2))
                                 print(f"[Heartbeat] loop={self.loop_iteration_count}, "
                                       f"state={self.state.value}, gen={self.generation}, "
                                       f"in_speech={self.segmentor.in_speech}, "
-                                      f"prob_ema={self.segmentor.prob_ema:.3f}")
+                                      f"prob_ema={self.segmentor.prob_ema:.3f}, "
+                                      f"frames={len(frames)}, audio_rms={audio_rms:.1f}")
 
                             # Process VAD
                             for frame in frames:

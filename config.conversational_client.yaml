@@ -8,8 +8,8 @@ audio:
   frame_ms: 30
 
 vad:
-  threshold: 0.35
-  ema_alpha: 0.25
+  threshold: 0.20          # Lowered for better sensitivity
+  ema_alpha: 0.35          # Faster response
   pre_ms: 1200          # Increased for better speech start capture
   hang_ms: 1200
   post_ms: 400
@@ -27,10 +27,10 @@ whisper_server:
 llm:
   host: "100.120.226.89"  # WSL2 gateway IP to reach Windows host
   port: 1234
-  model: "qwen3-vl-8b-instruct"
+  model: "mistralai/ministral-3-3b"
   temperature: 0.7
   max_tokens: -1
-  system_prompt: "You are a helpful voice assistant. Keep it short, especially the first sentence. Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. Respond in a natural, conversational tone suitable for spoken dialogue. NEVER USE MARKDOWN. NEVER USE EMOJIS. ALWAYS RESPOND IN ENGLISH ONLY - the TTS system only supports English."
+  system_prompt: "You are a helpful voice assistant. Keep it short, especially the first sentence. The first sentence of your response should typically consist of 1-4 words only. Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. Respond in a natural, conversational tone suitable for spoken dialogue. NEVER USE MARKDOWN. NEVER USE EMOJIS. ALWAYS RESPOND IN ENGLISH ONLY - the TTS system only supports English."
 
 # TTS WebSocket server
 tts:

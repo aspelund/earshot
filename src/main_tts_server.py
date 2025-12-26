@@ -49,7 +49,8 @@ def main():
         t0 = time.perf_counter()
 
         # Generate audio
-        wav = model.generate(text)
+        with torch.no_grad():
+            wav = model.generate(text)
 
         # Convert tensor to WAV bytes
         buffer = io.BytesIO()
@@ -57,6 +58,11 @@ def main():
         sf.write(buffer, audio_np, model.sr, format="WAV")
         buffer.seek(0)
         wav_bytes = buffer.read()
+
+        # Clear GPU cache to prevent memory fragmentation
+        del wav
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         latency = time.perf_counter() - t0
         logger.info(f"Synthesized {len(text)} chars in {latency:.2f}s ({len(wav_bytes)} bytes)")
