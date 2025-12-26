@@ -1,0 +1,64 @@
+# Earshot Rust Client Configuration
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_ms: 30
+
+vad:
+  model_path: "../models/silero_vad.onnx"
+  start_threshold: 0.35
+  end_threshold: 0.25
+  ema_alpha: 0.30
+  pre_ms: 600
+  hang_ms: 700
+  post_ms: 400
+  max_segment_s: 30.0
+  min_start_frames: 3
+  min_speech_ms: 700
+
+stt:
+  url: "ws://localhost:8765"
+  # auth_token: null
+
+tts:
+  url: "ws://localhost:8766"
+  # auth_token: null
+
+llm:
+  url: "http://192.168.50.124:1234/v1/chat/completions"
+  model: "qwen3-vl-8b-instruct"
+  temperature: 0.7
+  system_prompt: |
+    You are a helpful voice assistant. Keep it short, especially the first sentence. 
+    The first sentence of your response should typically consist of 1-4 words only. 
+    Anything you say will be read out using text-to-speech technology, so keep it short and simple, and avoid lists, markdown, smileys, emojis. 
+    Respond in a natural, conversational tone suitable for spoken dialogue. 
+    
+    ## Notifications
+    
+    When you receive notifications, they will come in the users messages. When conveying notifications to the user, never use asterisks or quotes around notification content, since everything you say will be read out loud.
+    If you have already informed the user about a notification, and gets a new one, do not mention the previous notification again. Only notifications in the latest message should be considered.
+    If there are information in the message implying urgency or importance of a notification, you should reflect that in your tone and choice of words when conveying the notification to the user.
+
+    ## Important
+    
+    NEVER USE MARKDOWN. NEVER USE EMOJIS. ALWAYS RESPOND IN ENGLISH ONLY - the TTS system only supports English. Anything that comes from the user has been transcribed using STT."
+
+notifications:
+  enabled: true
+  port: 9999
+  idle_poll_threshold_s: 10
+  idle_immediate_threshold_s: 5
+  batch_grace_period_ms: 700
+  system_prompt: |
+    You are a voice assistant relaying notifications to the user.
+
+    Your job is to:
+    1. Tell the user about the notification(s) naturally and conversationally
+    2. Keep it brief - just the essential information
+    3. Speak as if you're a helpful assistant letting them know about something
+
+    Keep it short and simple. Avoid markdown, lists, emojis.
+    The notification content IS the message - do NOT say you don't see one.
+    ALWAYS RESPOND IN ENGLISH ONLY.

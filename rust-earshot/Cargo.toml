@@ -1,0 +1,42 @@
+[package]
+name = "earshot"
+version = "0.1.0"
+edition = "2021"
+description = "Real-time conversational AI client with VAD, STT, TTS, and LLM"
+
+[[bin]]
+name = "earshot"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full", "sync", "time", "macros", "rt-multi-thread"] }
+
+# Audio
+cpal = "0.15"
+
+# ML inference (ONNX Runtime)
+ort = { version = "2.0.0-rc.9", features = ["load-dynamic", "ndarray"] }
+ndarray = "0.16"
+
+# Networking
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+reqwest = { version = "0.12", features = ["stream", "json"] }
+futures = "0.3"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+lto = true
+opt-level = 3
