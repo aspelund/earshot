@@ -20,10 +20,18 @@ vad:
   model_path: "./models/ten_vad.onnx"
 
 stt:
+  backend: "parakeet"       # "whisper" or "parakeet" (parakeet is 5-10x faster, English-only)
+
+  # Whisper settings (used when backend: whisper)
   model_size: "medium"     # Multilingual, high accuracy
-  device: "cuda"           # "cuda" for GPU, "cpu" for CPU
   compute_type: "float16"  # "float16" for GPU, "int8" for CPU
   language: null           # Auto-detect language (or set to "en", "sv", etc.)
+
+  # Parakeet settings (used when backend: parakeet)
+  model_name: "nvidia/parakeet-tdt-0.6b-v2"  # Or parakeet-tdt-0.6b-v3 for longer audio
+
+  # Common settings
+  device: "cuda"           # "cuda" for GPU, "cpu" for CPU
   beam_size: 1             # Greedy decoding for speed
   word_timestamps: true
 

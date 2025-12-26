@@ -3,6 +3,10 @@ set -euo pipefail
 export PYTHONUNBUFFERED=1
 export CONFIG_PATH=${CONFIG_PATH:-config.yaml}
 
+# Disable CUDA graphs for NeMo (required for WSL2 compatibility)
+export CUDA_LAUNCH_BLOCKING=1
+export NEMO_DISABLE_CUDA_GRAPH_DECODER=1
+
 # Get the script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"

@@ -1,14 +1,18 @@
 """
-Whisper-only server: Receives pre-segmented audio from VAD clients and transcribes.
+ASR server: Receives pre-segmented audio from VAD clients and transcribes.
+Supports multiple backends: Whisper (default) or NVIDIA Parakeet.
 No VAD or segmentation - just STT on incoming segments.
 """
 import os
+
+# Disable CUDA graphs for NeMo (must be set before importing NeMo)
+os.environ["NEMO_DISABLE_CUDA_GRAPH_DECODER"] = "1"
+
 import yaml
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-from .stt_whisper import FastSTT
 from .whisper_server import WhisperServer
 from loguru import logger
 
@@ -23,10 +27,19 @@ def main():
     load_dotenv()
     cfg = load_cfg()
 
-    # Initialize STT only (no VAD, no segmentor)
-    logger.info("Initializing Whisper STT...")
-    stt = FastSTT(cfg["stt"])
-    logger.info("Whisper model loaded")
+    # Select STT backend
+    backend = cfg["stt"].get("backend", "whisper")
+
+    if backend == "parakeet":
+        from .stt_parakeet import ParakeetSTT
+        logger.info("Initializing NVIDIA Parakeet STT...")
+        stt = ParakeetSTT(cfg["stt"])
+        logger.info(f"Parakeet model loaded: {cfg['stt'].get('model_name', 'nvidia/parakeet-tdt-0.6b-v2')}")
+    else:
+        from .stt_whisper import FastSTT
+        logger.info("Initializing Whisper STT...")
+        stt = FastSTT(cfg["stt"])
+        logger.info(f"Whisper model loaded: {cfg['stt'].get('model_size', 'medium')}")
 
     # Thread pool for STT processing (so async handlers don't block)
     executor = ThreadPoolExecutor(max_workers=4)
