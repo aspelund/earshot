@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, watch};
 use tracing::{debug, error, info, warn};
 
-use crate::audio::{AudioCapture, AudioPlayer};
+use crate::audio::{AudioCapture, AudioPlayer, FFTProcessor};
 use crate::clients::{ChatMessage, LlmClient, SttClient, TtsClient, TtsResult, TtsStreamEvent};
 use crate::config::Config;
 use crate::gui::{GuiCommand, GuiState, PipelineState};
@@ -759,6 +759,10 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
     let mut was_in_speech = false;
     let mut is_listening = true;
 
+    // FFT processor for visualization (128-point FFT at sample rate)
+    let mut fft_processor = FFTProcessor::new(128, cfg.audio.sample_rate);
+    let fft_sender = gui_state.fft_sender();
+
     info!("Pipeline initialized, listening...");
     info!("Speak to chat with the AI assistant. Close the window to stop.\n");
 
@@ -1215,6 +1219,10 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
         // Update GUI input level
         let input_rms = calculate_rms(&frame);
         gui_state.input_level.store(input_rms);
+
+        // Process FFT for visualization (every frame, ~33ms at 30fps)
+        let fft_snapshot = fft_processor.process(&frame);
+        fft_sender.send(fft_snapshot);
 
         // Process VAD
         let prob = match vad.process(&frame) {

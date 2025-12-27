@@ -1,5 +1,6 @@
 //! Thread-safe shared state for GUI communication
 
+use super::fft_data::{FFTChannel, FFTReceiver, FFTSender};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -67,11 +68,16 @@ pub struct GuiState {
     pub command_tx: Sender<GuiCommand>,
     /// Command receiver (Pipeline side)
     command_rx: Receiver<GuiCommand>,
+    /// FFT sender (Pipeline -> GUI) - clone this for the audio thread
+    fft_sender: FFTSender,
+    /// FFT receiver (GUI side) - stored here but moved to app on creation
+    fft_receiver: Option<FFTReceiver>,
 }
 
 impl GuiState {
     pub fn new() -> Arc<Self> {
         let (command_tx, command_rx) = bounded(16);
+        let fft_channel = FFTChannel::new();
         Arc::new(Self {
             input_level: AtomicF32::new(0.0),
             output_level: AtomicF32::new(0.0),
@@ -79,7 +85,19 @@ impl GuiState {
             state: AtomicU8::new(PipelineState::Idle as u8),
             command_tx,
             command_rx,
+            fft_sender: fft_channel.sender(),
+            fft_receiver: Some(fft_channel.receiver()),
         })
+    }
+
+    /// Get the FFT sender for the audio pipeline to use
+    pub fn fft_sender(&self) -> FFTSender {
+        self.fft_sender.clone()
+    }
+
+    /// Take the FFT receiver (can only be called once, typically by the app)
+    pub fn take_fft_receiver(&mut self) -> Option<FFTReceiver> {
+        self.fft_receiver.take()
     }
 
     pub fn state(&self) -> PipelineState {
@@ -99,6 +117,7 @@ impl GuiState {
 impl Default for GuiState {
     fn default() -> Self {
         let (command_tx, command_rx) = bounded(16);
+        let fft_channel = FFTChannel::new();
         Self {
             input_level: AtomicF32::new(0.0),
             output_level: AtomicF32::new(0.0),
@@ -106,6 +125,8 @@ impl Default for GuiState {
             state: AtomicU8::new(PipelineState::Idle as u8),
             command_tx,
             command_rx,
+            fft_sender: fft_channel.sender(),
+            fft_receiver: Some(fft_channel.receiver()),
         }
     }
 }

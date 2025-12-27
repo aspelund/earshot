@@ -60,18 +60,28 @@ fn main() -> Result<()> {
     });
 
     // Run GUI on main thread (required by some platforms)
+    // Try wgpu first, fall back to glow if GPU not available (e.g., WSL2)
+    let renderer = if std::env::var("EARSHOT_USE_GLOW").is_ok() {
+        info!("Using Glow (OpenGL) renderer");
+        eframe::Renderer::Glow
+    } else {
+        info!("Using wgpu renderer");
+        eframe::Renderer::Wgpu
+    };
+
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([500.0, 600.0])
-            .with_min_inner_size([400.0, 500.0])
-            .with_title("Earshot"),
+            .with_inner_size([800.0, 700.0])
+            .with_min_inner_size([600.0, 500.0])
+            .with_title("Earshot - Voice Assistant"),
+        renderer,
         ..Default::default()
     };
 
     eframe::run_native(
         "Earshot",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(EarshotApp::new(gui_state)))),
+        Box::new(move |cc| Ok(Box::new(EarshotApp::new(cc, gui_state)))),
     )
     .map_err(|e| anyhow::anyhow!("GUI error: {}", e))?;
 
