@@ -74,11 +74,18 @@ pub struct AudioConfig {
     pub channels: u16,
     #[serde(default = "default_frame_ms")]
     pub frame_ms: u32,
+    #[serde(default)]
+    pub input_device: Option<String>,
+    #[serde(default)]
+    pub output_device: Option<String>,
+    #[serde(default = "default_list_devices")]
+    pub list_devices: bool,
 }
 
 fn default_sample_rate() -> u32 { 16000 }
 fn default_channels() -> u16 { 1 }
 fn default_frame_ms() -> u32 { 30 }
+fn default_list_devices() -> bool { false }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct VadConfig {
@@ -158,6 +165,9 @@ impl Default for AudioConfig {
             sample_rate: default_sample_rate(),
             channels: default_channels(),
             frame_ms: default_frame_ms(),
+            input_device: None,
+            output_device: None,
+            list_devices: default_list_devices(),
         }
     }
 }

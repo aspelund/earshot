@@ -45,6 +45,10 @@ pub struct FFTProcessor {
     smoothed_magnitudes: [f32; NUM_DISPLAY_BINS],
     /// Decay factor for exponential smoothing (0.0-1.0)
     smoothing_decay: f32,
+    /// Frame counter for periodic logging
+    frame_count: u32,
+    /// Running average of max magnitude for adaptive scaling
+    avg_max_magnitude: f32,
 }
 
 impl FFTProcessor {
@@ -73,7 +77,9 @@ impl FFTProcessor {
             output_buffer: vec![Complex::new(0.0, 0.0); fft_size],
             magnitude_buffer: vec![0.0; fft_size / 2],
             smoothed_magnitudes: [0.0; NUM_DISPLAY_BINS],
-            smoothing_decay: 0.7,
+            smoothing_decay: 0.85, // Slower decay for smoother visualization
+            frame_count: 0,
+            avg_max_magnitude: 0.1, // Start with a reasonable baseline
         }
     }
 
@@ -82,6 +88,8 @@ impl FFTProcessor {
     /// # Arguments
     /// * `samples` - Audio samples (mono, f32). Will use up to fft_size samples.
     pub fn process(&mut self, samples: &[f32]) -> FFTSnapshot {
+        self.frame_count += 1;
+
         // Handle case where we have fewer samples than FFT size
         let num_samples = samples.len().min(self.fft_size);
 
@@ -101,34 +109,70 @@ impl FFTProcessor {
             self.magnitude_buffer[i] = c.norm();
         }
 
-        // Logarithmic binning to display bins
+        // Logarithmic binning to display bins - use RMS average instead of max
         let mut magnitudes = [0.0f32; NUM_DISPLAY_BINS];
         for i in 0..NUM_DISPLAY_BINS {
             let (start, end) = self.log_bin_range(i);
             if start < end && end <= half_size {
-                // Use max magnitude in the range
-                magnitudes[i] = self.magnitude_buffer[start..end]
+                // Use RMS (root mean square) for smoother response
+                let sum_sq: f32 = self.magnitude_buffer[start..end]
                     .iter()
-                    .copied()
-                    .fold(0.0f32, f32::max);
+                    .map(|x| x * x)
+                    .sum();
+                let count = (end - start) as f32;
+                magnitudes[i] = (sum_sq / count).sqrt();
             }
         }
 
-        // Normalize magnitudes
-        let max_mag = magnitudes.iter().copied().fold(0.001f32, f32::max);
+        // Calculate current max magnitude
+        let current_max = magnitudes.iter().copied().fold(0.0001f32, f32::max);
+
+        // Update running average of max (slow adaptation)
+        self.avg_max_magnitude = self.avg_max_magnitude * 0.99 + current_max * 0.01;
+
+        // Use the larger of current max or running average for normalization
+        // This prevents background noise from causing big spikes
+        let norm_factor = self.avg_max_magnitude.max(current_max * 0.5).max(0.001);
+
+        // Apply noise floor - anything below 5% of norm_factor is zeroed
+        let noise_floor = norm_factor * 0.05;
+
+        // Normalize magnitudes with noise floor and boost for visibility
+        let boost = 4.0; // Boost factor to make visualization more dynamic
         for m in &mut magnitudes {
-            *m = (*m / max_mag).min(1.0);
+            *m = (((*m - noise_floor).max(0.0) / norm_factor) * boost).min(1.0);
         }
 
-        // Apply exponential smoothing
+        // Apply exponential smoothing with slower decay
         for (i, &m) in magnitudes.iter().enumerate() {
-            // Fast attack, slow decay
+            // Moderate attack, slow decay
+            let attack_factor = 0.4; // How fast to respond to increases
             if m > self.smoothed_magnitudes[i] {
-                self.smoothed_magnitudes[i] = m;
+                self.smoothed_magnitudes[i] =
+                    self.smoothed_magnitudes[i] * (1.0 - attack_factor) + m * attack_factor;
             } else {
                 self.smoothed_magnitudes[i] =
                     self.smoothed_magnitudes[i] * self.smoothing_decay + m * (1.0 - self.smoothing_decay);
             }
+            // Hard floor - anything below 0.02 is zeroed to prevent tiny residual spikes
+            if self.smoothed_magnitudes[i] < 0.02 {
+                self.smoothed_magnitudes[i] = 0.0;
+            }
+        }
+
+        // Periodic logging (every ~60 frames, roughly once per second at 60fps)
+        if self.frame_count % 60 == 0 {
+            let bass_raw: f32 = magnitudes[0..8].iter().sum::<f32>() / 8.0;
+            let mid_raw: f32 = magnitudes[8..32].iter().sum::<f32>() / 24.0;
+            let high_raw: f32 = magnitudes[32..64].iter().sum::<f32>() / 32.0;
+            tracing::debug!(
+                "[FFT] max={:.4} avg_max={:.4} norm={:.4} | raw bass={:.3} mid={:.3} high={:.3} | smoothed bass={:.3} mid={:.3} high={:.3}",
+                current_max, self.avg_max_magnitude, norm_factor,
+                bass_raw, mid_raw, high_raw,
+                self.smoothed_magnitudes[0..8].iter().sum::<f32>() / 8.0,
+                self.smoothed_magnitudes[8..32].iter().sum::<f32>() / 24.0,
+                self.smoothed_magnitudes[32..64].iter().sum::<f32>() / 32.0,
+            );
         }
 
         // Calculate frequency band energies
@@ -156,19 +200,23 @@ impl FFTProcessor {
         }
     }
 
-    /// Calculate logarithmic bin range for a display bin
+    /// Calculate bin range for a display bin - voice-only distribution
+    /// Only uses the first 45% of FFT bins (where voice energy is) spread across all display bins
     fn log_bin_range(&self, display_bin: usize) -> (usize, usize) {
         let half_size = self.fft_size / 2;
-        let log_min = 1.0f32.ln();
-        let log_max = (half_size as f32).ln();
 
-        let t_start = display_bin as f32 / NUM_DISPLAY_BINS as f32;
+        // Only use first 45% of FFT spectrum (voice range), spread across all 64 display bins
+        let voice_range = 0.45;
+        let max_fft_bin = (half_size as f32 * voice_range) as usize;
+
+        let t = display_bin as f32 / NUM_DISPLAY_BINS as f32;
         let t_end = (display_bin + 1) as f32 / NUM_DISPLAY_BINS as f32;
 
-        let start = (t_start * (log_max - log_min) + log_min).exp() as usize;
-        let end = (t_end * (log_max - log_min) + log_min).exp() as usize;
+        // Linear mapping across the voice range
+        let start = (t * max_fft_bin as f32) as usize;
+        let end = (t_end * max_fft_bin as f32) as usize;
 
-        (start.max(1), end.min(half_size))
+        (start.max(1), end.max(start + 1).min(half_size))
     }
 
     /// Get the frequency in Hz for a given display bin

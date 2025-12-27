@@ -60,22 +60,62 @@ fn main() -> Result<()> {
     });
 
     // Run GUI on main thread (required by some platforms)
-    // Try wgpu first, fall back to glow if GPU not available (e.g., WSL2)
-    let renderer = if std::env::var("EARSHOT_USE_GLOW").is_ok() {
-        info!("Using Glow (OpenGL) renderer");
-        eframe::Renderer::Glow
-    } else {
-        info!("Using wgpu renderer");
-        eframe::Renderer::Wgpu
-    };
+    // Default to wgpu (DX12 on Windows) for GPU-accelerated visualization
+    // Set EARSHOT_USE_GLOW=1 to fall back to OpenGL if wgpu has issues
+    let use_glow = std::env::var("EARSHOT_USE_GLOW").is_ok();
 
-    let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 700.0])
-            .with_min_inner_size([600.0, 500.0])
-            .with_title("Earshot - Voice Assistant"),
-        renderer,
-        ..Default::default()
+    let native_options = if use_glow {
+        info!("Using Glow (OpenGL) renderer");
+        eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_inner_size([800.0, 700.0])
+                .with_min_inner_size([600.0, 500.0])
+                .with_title("Earshot - Voice Assistant"),
+            renderer: eframe::Renderer::Glow,
+            ..Default::default()
+        }
+    } else {
+        info!("Using wgpu renderer (DX12/Vulkan)");
+
+        // Configure wgpu for optimal Windows performance
+        let wgpu_setup = eframe::egui_wgpu::WgpuSetup::CreateNew(
+            eframe::egui_wgpu::WgpuSetupCreateNew {
+                instance_descriptor: eframe::wgpu::InstanceDescriptor {
+                    // Prefer DX12 on Windows, Vulkan as fallback
+                    backends: eframe::wgpu::Backends::DX12 | eframe::wgpu::Backends::VULKAN,
+                    // Disable validation in release for performance
+                    flags: eframe::wgpu::InstanceFlags::empty(),
+                    ..Default::default()
+                },
+                power_preference: eframe::wgpu::PowerPreference::HighPerformance,
+                device_descriptor: std::sync::Arc::new(|_adapter| {
+                    eframe::wgpu::DeviceDescriptor {
+                        label: Some("earshot"),
+                        required_features: eframe::wgpu::Features::empty(),
+                        required_limits: eframe::wgpu::Limits::downlevel_defaults(),
+                        memory_hints: eframe::wgpu::MemoryHints::Performance,
+                    }
+                }),
+                ..Default::default()
+            }
+        );
+
+        eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_inner_size([800.0, 700.0])
+                .with_min_inner_size([600.0, 500.0])
+                .with_title("Earshot - Voice Assistant"),
+            renderer: eframe::Renderer::Wgpu,
+            wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
+                wgpu_setup,
+                on_surface_error: std::sync::Arc::new(|err| {
+                    tracing::error!("wgpu surface error: {:?}", err);
+                    eframe::egui_wgpu::SurfaceErrorAction::SkipFrame
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     };
 
     eframe::run_native(

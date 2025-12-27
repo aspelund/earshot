@@ -10,6 +10,32 @@ use tracing::{debug, info, warn};
 const FADE_OUT_MS: u32 = 250;
 const AMPLITUDE_WINDOW: usize = 512; // Samples for RMS calculation
 
+fn device_name_matches(device: &cpal::Device, needle: &str) -> bool {
+    let name = match device.name() {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    name.to_lowercase().contains(&needle.to_lowercase())
+}
+
+pub fn list_output_devices() {
+    let host = cpal::default_host();
+    match host.output_devices() {
+        Ok(devices) => {
+            for (idx, device) in devices.enumerate() {
+                let name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
+                info!("Output device {}: {}", idx, name);
+            }
+        }
+        Err(e) => {
+            warn!("Failed to list output devices: {}", e);
+        }
+    }
+}
+
+/// Ring buffer for recent playback samples (for FFT visualization)
+const FFT_BUFFER_SIZE: usize = 512;
+
 /// Shared state for audio playback (must be Send + Sync)
 struct PlaybackState {
     queue: VecDeque<Vec<f32>>,
@@ -17,6 +43,9 @@ struct PlaybackState {
     position: usize,
     fade_out: bool,
     fade_samples_remaining: usize,
+    /// Ring buffer of recently played samples for FFT
+    fft_buffer: [f32; FFT_BUFFER_SIZE],
+    fft_buffer_pos: usize,
 }
 
 /// Thread-safe audio player handle
@@ -45,11 +74,29 @@ unsafe impl Sync for StreamHolder {}
 
 impl AudioPlayer {
     /// Create a new audio player
-    pub fn new(sample_rate: u32) -> Result<Self> {
+    pub fn new(sample_rate: u32, output_device: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| anyhow!("No output device available"))?;
+        let device = if let Some(preferred) = output_device {
+            let devices: Vec<cpal::Device> = host.output_devices()?.collect();
+            if let Some(found) = devices.iter().find(|d| device_name_matches(d, preferred)) {
+                info!("Using output device: {}", found.name().unwrap_or_default());
+                found.clone()
+            } else {
+                let names = devices
+                    .iter()
+                    .map(|d| d.name().unwrap_or_else(|_| "<unknown>".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow!(
+                    "Output device '{}' not found. Available: {}",
+                    preferred,
+                    names
+                ));
+            }
+        } else {
+            host.default_output_device()
+                .ok_or_else(|| anyhow!("No output device available"))?
+        };
 
         info!("Output device: {}", device.name().unwrap_or_default());
 
@@ -139,6 +186,8 @@ impl AudioPlayer {
             position: 0,
             fade_out: false,
             fade_samples_remaining: 0,
+            fft_buffer: [0.0; FFT_BUFFER_SIZE],
+            fft_buffer_pos: 0,
         }));
 
         let is_playing = Arc::new(AtomicBool::new(false));
@@ -214,6 +263,11 @@ impl AudioPlayer {
                         *ch_sample = sample_value;
                     }
 
+                    // Store in FFT ring buffer for visualization
+                    let fft_pos = state.fft_buffer_pos;
+                    state.fft_buffer[fft_pos] = sample_value;
+                    state.fft_buffer_pos = (fft_pos + 1) % FFT_BUFFER_SIZE;
+
                     // Accumulate for RMS calculation
                     sum_sq += sample_value * sample_value;
                     sample_count += 1;
@@ -249,6 +303,24 @@ impl AudioPlayer {
     /// Get current playback amplitude (0.0 to 1.0)
     pub fn current_amplitude(&self) -> f32 {
         f32::from_bits(self.current_amplitude.load(Ordering::Relaxed))
+    }
+
+    /// Get recently played samples for FFT visualization
+    /// Returns samples in chronological order (oldest to newest)
+    pub fn get_fft_samples(&self) -> [f32; FFT_BUFFER_SIZE] {
+        let state = self.state.lock().unwrap();
+        let mut result = [0.0f32; FFT_BUFFER_SIZE];
+        let pos = state.fft_buffer_pos;
+        // Copy from ring buffer in chronological order
+        for i in 0..FFT_BUFFER_SIZE {
+            result[i] = state.fft_buffer[(pos + i) % FFT_BUFFER_SIZE];
+        }
+        result
+    }
+
+    /// Get the device sample rate (for FFT processing)
+    pub fn device_sample_rate(&self) -> u32 {
+        self.device_rate
     }
 
     /// Start the audio stream

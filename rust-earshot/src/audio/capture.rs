@@ -7,6 +7,29 @@ use tracing::{debug, info, warn};
 
 use crate::config::AudioConfig;
 
+fn device_name_matches(device: &cpal::Device, needle: &str) -> bool {
+    let name = match device.name() {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    name.to_lowercase().contains(&needle.to_lowercase())
+}
+
+pub fn list_input_devices() {
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(devices) => {
+            for (idx, device) in devices.enumerate() {
+                let name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
+                info!("Input device {}: {}", idx, name);
+            }
+        }
+        Err(e) => {
+            warn!("Failed to list input devices: {}", e);
+        }
+    }
+}
+
 /// Audio capture from microphone with optional resampling
 pub struct AudioCapture {
     stream: cpal::Stream,
@@ -22,9 +45,27 @@ impl AudioCapture {
     /// Create a new audio capture instance
     pub fn new(cfg: &AudioConfig) -> Result<Self> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| anyhow!("No input device available"))?;
+        let device = if let Some(preferred) = cfg.input_device.as_deref() {
+            let devices: Vec<cpal::Device> = host.input_devices()?.collect();
+            if let Some(found) = devices.iter().find(|d| device_name_matches(d, preferred)) {
+                info!("Using input device: {}", found.name().unwrap_or_default());
+                found.clone()
+            } else {
+                let names = devices
+                    .iter()
+                    .map(|d| d.name().unwrap_or_else(|_| "<unknown>".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(anyhow!(
+                    "Input device '{}' not found. Available: {}",
+                    preferred,
+                    names
+                ));
+            }
+        } else {
+            host.default_input_device()
+                .ok_or_else(|| anyhow!("No input device available"))?
+        };
 
         info!("Input device: {}", device.name().unwrap_or_default());
 

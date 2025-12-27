@@ -4,6 +4,9 @@ audio:
   sample_rate: 16000
   channels: 1
   frame_ms: 30
+  # input_device: "Microphone (USB Audio Device)"
+  # output_device: "Speakers (Realtek Audio)"
+  list_devices: true
 
 vad:
   model_path: "../models/silero_vad.onnx"

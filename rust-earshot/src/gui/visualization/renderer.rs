@@ -19,7 +19,8 @@ pub struct JarvisUniforms {
     pub dominant_bin: u32,
     pub pipeline_state: u32,
     pub aspect_ratio: f32,
-    pub _padding: f32,
+    /// User microphone input level (0.0 to 1.0)
+    pub input_level: f32,
 }
 
 impl Default for JarvisUniforms {
@@ -32,7 +33,7 @@ impl Default for JarvisUniforms {
             dominant_bin: 0,
             pipeline_state: 0,
             aspect_ratio: 1.0,
-            _padding: 0.0,
+            input_level: 0.0,
         }
     }
 }
@@ -266,11 +267,12 @@ impl JarvisVisualizer {
     }
 
     /// Update from FFT data and return callback for rendering
-    pub fn update(&mut self, aspect_ratio: f32, pipeline_state: u32) -> JarvisVisualizerCallback {
+    pub fn update(&mut self, aspect_ratio: f32, pipeline_state: u32, input_level: f32) -> JarvisVisualizerCallback {
         // Update time
         self.current_uniforms.time = self.start_time.elapsed().as_secs_f32();
         self.current_uniforms.aspect_ratio = aspect_ratio;
         self.current_uniforms.pipeline_state = pipeline_state;
+        self.current_uniforms.input_level = input_level;
 
         // Try to get latest FFT data
         if let Some(snapshot) = self.fft_receiver.try_recv() {

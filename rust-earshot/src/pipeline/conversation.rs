@@ -9,11 +9,12 @@
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, watch};
 use tracing::{debug, error, info, warn};
 
-use crate::audio::{AudioCapture, AudioPlayer, FFTProcessor};
+use crate::audio::{list_input_devices, list_output_devices, AudioCapture, AudioPlayer, FFTProcessor};
 use crate::clients::{ChatMessage, LlmClient, SttClient, TtsClient, TtsResult, TtsStreamEvent};
 use crate::config::Config;
 use crate::gui::{GuiCommand, GuiState, PipelineState};
@@ -47,12 +48,17 @@ pub async fn run(cfg: Config) -> Result<()> {
     // Initialize segmentor
     let mut segmentor = Segmentor::new(cfg.audio.sample_rate, cfg.audio.frame_ms, &cfg.vad);
 
+    if cfg.audio.list_devices {
+        list_input_devices();
+        list_output_devices();
+    }
+
     // Initialize audio capture
     let mut audio_capture = AudioCapture::new(&cfg.audio)?;
     audio_capture.start()?;
 
     // Initialize audio player
-    let audio_player = Arc::new(AudioPlayer::new(24000)?); // TTS outputs 24kHz
+    let audio_player = Arc::new(AudioPlayer::new(24000, cfg.audio.output_device.as_deref())?); // TTS outputs 24kHz
     audio_player.start()?;
 
     // Initialize clients
@@ -707,12 +713,17 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
     // Initialize segmentor
     let mut segmentor = Segmentor::new(cfg.audio.sample_rate, cfg.audio.frame_ms, &cfg.vad);
 
+    if cfg.audio.list_devices {
+        list_input_devices();
+        list_output_devices();
+    }
+
     // Initialize audio capture
     let mut audio_capture = AudioCapture::new(&cfg.audio)?;
     audio_capture.start()?;
 
     // Initialize audio player
-    let audio_player = Arc::new(AudioPlayer::new(24000)?); // TTS outputs 24kHz
+    let audio_player = Arc::new(AudioPlayer::new(24000, cfg.audio.output_device.as_deref())?); // TTS outputs 24kHz
     audio_player.start()?;
 
     // Initialize clients
@@ -759,9 +770,24 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
     let mut was_in_speech = false;
     let mut is_listening = true;
 
-    // FFT processor for visualization (128-point FFT at sample rate)
+    // FFT stats tracking (only during AI speech)
+    let mut fft_sample_count: u32 = 0;
+    let mut fft_band_peaks: [f32; 5] = [0.0; 5];
+    let mut fft_band_sums: [f32; 5] = [0.0; 5];
+
+    // FFT decay tracking - continue sending decaying values after speech ends
+    let mut fft_decay_frames: u32 = 0;
+    const FFT_DECAY_DURATION: u32 = 30; // ~1 second at 30fps
+
+    // FFT processors for visualization (input + output)
     let mut fft_processor = FFTProcessor::new(128, cfg.audio.sample_rate);
     let fft_sender = gui_state.fft_sender();
+    // Use device sample rate for output FFT since playback buffer is at device rate
+    let output_fft_processor = Arc::new(StdMutex::new(FFTProcessor::new(128, audio_player.device_sample_rate())));
+
+    // Send initial zero FFT to ensure visualization starts empty
+    use crate::audio::fft::FFTSnapshot;
+    fft_sender.send(FFTSnapshot::default());
 
     info!("Pipeline initialized, listening...");
     info!("Speak to chat with the AI assistant. Close the window to stop.\n");
@@ -857,7 +883,7 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
                                     sample_rate = sr;
                                     debug!("[TTS] Stream started @ {}Hz", sr);
                                 }
-                                TtsStreamEvent::Chunk { index, samples } => {
+                                TtsStreamEvent::Chunk { index: _, samples } => {
                                     if first_chunk {
                                         let first_chunk_received = tts_start.elapsed();
                                         info!("[TTS] first_chunk_received: {:.1}ms", first_chunk_received.as_secs_f64() * 1000.0);
@@ -875,6 +901,7 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
 
                                         first_chunk = false;
                                     } else {
+                                        // Just enqueue - FFT is calculated from actual playback in main loop
                                         audio_player.enqueue_pcm_f32(samples, sample_rate);
                                     }
                                 }
@@ -1220,9 +1247,58 @@ pub async fn run_with_gui(cfg: Config, gui_state: Arc<GuiState>) -> Result<()> {
         let input_rms = calculate_rms(&frame);
         gui_state.input_level.store(input_rms);
 
-        // Process FFT for visualization (every frame, ~33ms at 30fps)
-        let fft_snapshot = fft_processor.process(&frame);
-        fft_sender.send(fft_snapshot);
+        // Process FFT for visualization - only show AI audio, not microphone
+        if audio_player.is_playing() {
+            // Reset decay counter while playing
+            fft_decay_frames = FFT_DECAY_DURATION;
+
+            // Get actual playback samples and compute FFT from them
+            let playback_samples = audio_player.get_fft_samples();
+            let fft_snapshot = output_fft_processor.lock().unwrap().process(&playback_samples);
+
+            // Track stats for 5 bands while AI is speaking (before sending)
+            fft_sample_count += 1;
+            let bands = [
+                fft_snapshot.magnitudes[0..13].iter().sum::<f32>() / 13.0,   // Band 1: bins 0-12
+                fft_snapshot.magnitudes[13..26].iter().sum::<f32>() / 13.0,  // Band 2: bins 13-25
+                fft_snapshot.magnitudes[26..39].iter().sum::<f32>() / 13.0,  // Band 3: bins 26-38
+                fft_snapshot.magnitudes[39..52].iter().sum::<f32>() / 13.0,  // Band 4: bins 39-51
+                fft_snapshot.magnitudes[52..64].iter().sum::<f32>() / 12.0,  // Band 5: bins 52-63
+            ];
+            for i in 0..5 {
+                fft_band_peaks[i] = fft_band_peaks[i].max(bands[i]);
+                fft_band_sums[i] += bands[i];
+            }
+
+            fft_sender.send(fft_snapshot);
+        } else if fft_decay_frames > 0 {
+            // AI stopped - send decaying FFT values
+            fft_decay_frames -= 1;
+
+            // Process with silence to let the smoothing decay naturally
+            let silence = [0.0f32; 512];
+            let fft_snapshot = output_fft_processor.lock().unwrap().process(&silence);
+            fft_sender.send(fft_snapshot);
+
+            // Log stats when decay starts (first frame after speech)
+            if fft_decay_frames == FFT_DECAY_DURATION - 1 && fft_sample_count > 0 {
+                info!(
+                    "[FFT Stats] samples={} | peaks: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}] | avgs: [{:.3}, {:.3}, {:.3}, {:.3}, {:.3}]",
+                    fft_sample_count,
+                    fft_band_peaks[0], fft_band_peaks[1], fft_band_peaks[2], fft_band_peaks[3], fft_band_peaks[4],
+                    fft_band_sums[0] / fft_sample_count as f32,
+                    fft_band_sums[1] / fft_sample_count as f32,
+                    fft_band_sums[2] / fft_sample_count as f32,
+                    fft_band_sums[3] / fft_sample_count as f32,
+                    fft_band_sums[4] / fft_sample_count as f32,
+                );
+                // Reset for next speech
+                fft_sample_count = 0;
+                fft_band_peaks = [0.0; 5];
+                fft_band_sums = [0.0; 5];
+            }
+        }
+        // When decay complete, visualization stays at zero (idle state)
 
         // Process VAD
         let prob = match vad.process(&frame) {
