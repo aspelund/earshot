@@ -71,11 +71,20 @@ See [`rust-earshot/README.md`](rust-earshot/README.md) for detailed Rust client 
 ## STT Server Features
 
 - **Real-time VAD**: Silero VAD for accurate speech detection with hysteresis
-- **Async STT**: faster-whisper on worker thread (never blocks audio)
-- **Multilingual**: Supports 99 languages with auto-detection
+- **Async STT**: Parakeet (NVIDIA NeMo) or faster-whisper on worker thread (never blocks audio)
+- **Multilingual**: Parakeet v3 supports 25 European languages, Whisper supports 99 languages
+- **Speaker diarization**: Pyannote-powered speaker detection ("who spoke when")
+- **Batch transcription**: HTTP endpoint for file upload with diarized output
 - **Smart segmentation**: Pre/post padding, hangover, min duration filtering
 - **JSONL logging**: Structured logs with UTC timestamps + word-level timing
 - **Network streaming**: Stream audio from remote devices (laptop/phone to server)
+
+### Diarization Output Format
+
+```
+00:00:00 Speaker 1: Hello, how are you today?
+00:00:04 Speaker 2: I'm doing well, thank you for asking.
+```
 
 ## TTS Server Features
 
@@ -284,13 +293,42 @@ Each line is a JSON object:
 - **Smoother detection:** Lower `ema_alpha` to 0.20-0.25 (less reactive to spikes)
 
 ### STT Model Selection
+
+**Parakeet (recommended for speed):**
+- **parakeet-tdt-0.6b-v3** - 25 European languages, ~5x faster than Whisper (~600MB)
+
+**Whisper (recommended for language coverage):**
 - **tiny.en** - Fastest, lowest accuracy (~75MB)
 - **base.en** - Good balance (~145MB)
 - **small.en** - Better accuracy (~466MB)
-- **medium** - Best multilingual (~1.5GB) ← Current default
+- **medium** - Best multilingual (~1.5GB)
 - **distil-medium.en** - 2x faster than medium, similar accuracy
 
-Change `model_size` in `config.yaml` and restart.
+Change `stt.backend` (`whisper` or `parakeet`) and `model_size`/`model_name` in `config.yaml`.
+
+### Batch Transcription with Diarization
+
+Upload an audio file for speaker-diarized transcription:
+
+```bash
+curl -X POST http://localhost:8765/transcribe \
+  -F "audio=@recording.wav" \
+  -F "model=parakeet"
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "duration_s": 125.4,
+  "processing_time_s": 8.2,
+  "num_speakers": 2,
+  "transcript": [...],
+  "formatted": "00:00:00 Speaker 1: Hello...\n00:00:04 Speaker 2: Hi..."
+}
+```
+
+Options: `model` (whisper/parakeet), `language`, `num_speakers`, `min_speakers`, `max_speakers`
 
 ## Troubleshooting
 

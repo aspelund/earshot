@@ -82,24 +82,16 @@ class ParakeetSTT:
 
         Note: Parakeet is English-only, so language parameter is ignored.
         """
-        from nemo.collections.asr.parts.mixins.transcription import TranscribeConfig
-
         # Convert PCM16 bytes to float32 array normalized to [-1, 1]
         pcm16_array = np.frombuffer(pcm16_bytes, dtype=np.int16)
         audio_float = pcm16_array.astype(np.float32) / 32768.0
-
-        # Create override config to disable CUDA graphs
-        override_cfg = TranscribeConfig(
-            verbose=False
-        )
 
         # Transcribe with timestamps - pass numpy array directly
         with torch.no_grad():
             output = self.model.transcribe(
                 audio_float,
                 timestamps=word_timestamps,
-                verbose=False,
-                override_config=override_cfg
+                verbose=False
             )
 
         # Handle different return types

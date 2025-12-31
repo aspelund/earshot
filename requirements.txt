@@ -14,6 +14,11 @@ soundfile>=0.12.0
 chatterbox-tts>=0.1.0
 soprano-tts>=0.1.0
 
-# Optional: NVIDIA Parakeet for faster English ASR (5-10x faster than Whisper)
+# Speaker diarization
+pyannote.audio>=3.1.0
+pydub>=0.25.0
+scipy>=1.11.0
+
+# Optional: NVIDIA Parakeet for faster multilingual ASR
 # Uncomment to install: pip install nemo_toolkit[asr]
 # nemo_toolkit[asr]

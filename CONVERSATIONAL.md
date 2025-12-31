@@ -247,8 +247,11 @@ speaker-test -t wav -c 2
 ## Command Reference
 
 ```bash
-# Start Whisper server
-python -m src.main_whisper_server
+# Start STT server (recommended - uses script for proper env setup)
+bash scripts/run_whisper_server.sh
+
+# Or start directly (make sure LD_LIBRARY_PATH is set for CUDA)
+python -m src.main_diarization_server
 
 # Start conversational client (default config)
 python scripts/conversational_client.py

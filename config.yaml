@@ -28,7 +28,7 @@ stt:
   language: null           # Auto-detect language (or set to "en", "sv", etc.)
 
   # Parakeet settings (used when backend: parakeet)
-  model_name: "nvidia/parakeet-tdt-0.6b-v2"  # Or parakeet-tdt-0.6b-v3 for longer audio
+  model_name: "nvidia/parakeet-tdt-0.6b-v3"  # Or parakeet-tdt-0.6b-v3 for longer audio
 
   # Common settings
   device: "cuda"           # "cuda" for GPU, "cpu" for CPU
@@ -41,3 +41,13 @@ logging:
   rotate_mb: 10
   backups: 5
   heartbeat_s: 60
+
+diarization:
+  enabled: true
+  model: "pyannote/speaker-diarization-3.1"
+  device: "cuda"           # "cuda" for GPU, "cpu" for CPU
+  # hf_token: null         # Set via HF_TOKEN env var (required for gated model)
+
+http:
+  max_file_size_mb: 100
+  allowed_extensions: ["wav", "mp3", "opus", "ogg", "flac", "m4a"]
