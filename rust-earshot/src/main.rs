@@ -3,8 +3,8 @@
 //! Handles: Audio I/O, VAD, Segmentation, LLM/STT/TTS client coordination
 //! Connects to: Parakeet (STT) and Chatterbox (TTS) Python servers
 
-// Hide console window on Windows
-#![windows_subsystem = "windows"]
+// Hide console window on Windows (commented out for debugging)
+// #![windows_subsystem = "windows"]
 
 mod audio;
 mod clients;
@@ -24,15 +24,16 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 use crate::gui::{EarshotApp, GuiState};
 
 fn main() -> Result<()> {
-    // Initialize file logging (logs to earshot.log in current directory)
+    // Initialize dual logging (console + file)
     let file_appender = tracing_appender::rolling::never(".", "earshot.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking_file, _guard) = tracing_appender::non_blocking(file_appender);
 
+    // Log to both stdout and file for debugging
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .with_target(false)
-        .with_writer(non_blocking.with_max_level(Level::INFO))
-        .with_ansi(false)
+        .with_writer(std::io::stdout.and(non_blocking_file))
+        .with_ansi(true)
         .init();
 
     info!("Earshot - Real-time Conversational AI");

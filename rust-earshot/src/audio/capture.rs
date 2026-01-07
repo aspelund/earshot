@@ -15,19 +15,23 @@ fn device_name_matches(device: &cpal::Device, needle: &str) -> bool {
     name.to_lowercase().contains(&needle.to_lowercase())
 }
 
-pub fn list_input_devices() {
+/// List available input devices
+pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
+    let mut devices = Vec::new();
     match host.input_devices() {
-        Ok(devices) => {
-            for (idx, device) in devices.enumerate() {
+        Ok(input_devices) => {
+            for device in input_devices {
                 let name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
-                info!("Input device {}: {}", idx, name);
+                info!("Input device: {}", name);
+                devices.push(name);
             }
         }
         Err(e) => {
             warn!("Failed to list input devices: {}", e);
         }
     }
+    devices
 }
 
 /// Audio capture from microphone with optional resampling
@@ -36,9 +40,7 @@ pub struct AudioCapture {
     receiver: mpsc::Receiver<Vec<f32>>,
     frame_samples: usize,
     buffer: Vec<f32>,
-    /// Resampling state: (device_rate, target_rate)
     resample: Option<(u32, u32)>,
-    resample_buffer: Vec<f32>,
 }
 
 impl AudioCapture {
@@ -71,78 +73,50 @@ impl AudioCapture {
 
         let target_rate = cfg.sample_rate;
 
-        // Try to use the requested config first
         let mut config = cpal::StreamConfig {
             channels: cfg.channels,
             sample_rate: cpal::SampleRate(target_rate),
             buffer_size: cpal::BufferSize::Default,
         };
 
-        // Check if device supports our config, if not find a compatible one
-        let resample = match device.supported_input_configs() {
-            Ok(supported) => {
-                let supported: Vec<_> = supported.collect();
-                let has_exact = supported.iter().any(|c| {
-                    c.channels() == cfg.channels &&
-                    c.min_sample_rate().0 <= target_rate &&
-                    c.max_sample_rate().0 >= target_rate
-                });
+        // Use device's default config and resample as needed
+        let resample = match device.default_input_config() {
+            Ok(default_config) => {
+                let device_rate = default_config.sample_rate().0;
+                let device_channels = default_config.channels();
 
-                if has_exact {
-                    info!("Device supports {}Hz natively", target_rate);
+                config.sample_rate = cpal::SampleRate(device_rate);
+                config.channels = device_channels;
+
+                if device_rate == target_rate {
+                    info!("Device supports {}Hz natively ({} channels)", target_rate, device_channels);
                     None
                 } else {
-                    // Find a supported rate we can resample from (prefer 48kHz, then 44.1kHz)
-                    let preferred_rates = [48000u32, 44100, 96000, 22050];
-                    let mut found_rate = None;
-
-                    for rate in preferred_rates {
-                        if supported.iter().any(|c| {
-                            c.channels() >= cfg.channels &&
-                            c.min_sample_rate().0 <= rate &&
-                            c.max_sample_rate().0 >= rate
-                        }) {
-                            found_rate = Some(rate);
-                            break;
-                        }
-                    }
-
-                    if let Some(device_rate) = found_rate {
-                        info!("Device uses {}Hz, will resample to {}Hz", device_rate, target_rate);
-                        config.sample_rate = cpal::SampleRate(device_rate);
-                        Some((device_rate, target_rate))
-                    } else {
-                        // Try default config
-                        if let Ok(default) = device.default_input_config() {
-                            let device_rate = default.sample_rate().0;
-                            info!("Using device default {}Hz, will resample to {}Hz", device_rate, target_rate);
-                            config.sample_rate = cpal::SampleRate(device_rate);
-                            config.channels = default.channels().min(cfg.channels);
-                            Some((device_rate, target_rate))
-                        } else {
-                            warn!("Could not determine supported config, trying requested config");
-                            None
-                        }
-                    }
+                    info!(
+                        "Device uses {}Hz ({} channels), will resample to {}Hz",
+                        device_rate, device_channels, target_rate
+                    );
+                    Some((device_rate, target_rate))
                 }
             }
             Err(e) => {
-                warn!("Could not query supported configs: {}, trying requested", e);
+                warn!("Could not get default config: {}, trying requested config", e);
                 None
             }
         };
 
         let frame_samples = (target_rate * cfg.frame_ms / 1000) as usize;
-        debug!("Frame size: {} samples ({} ms at {}Hz)", frame_samples, cfg.frame_ms, target_rate);
+        debug!(
+            "Frame size: {} samples ({} ms at {}Hz)",
+            frame_samples, cfg.frame_ms, target_rate
+        );
 
-        // Channel for audio data
         let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(64);
         let channels = config.channels as usize;
 
         let stream = device.build_input_stream(
             &config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                // Convert to mono if needed
                 let mono: Vec<f32> = if channels > 1 {
                     data.chunks(channels)
                         .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
@@ -162,8 +136,14 @@ impl AudioCapture {
             frame_samples,
             buffer: Vec::with_capacity(frame_samples * 2),
             resample,
-            resample_buffer: Vec::new(),
         })
+    }
+
+    /// Create audio capture for a specific device by name
+    pub fn with_device(device_name: &str, cfg: &AudioConfig) -> Result<Self> {
+        let mut cfg = cfg.clone();
+        cfg.input_device = Some(device_name.to_string());
+        Self::new(&cfg)
     }
 
     /// Start audio capture
@@ -181,18 +161,22 @@ impl AudioCapture {
     }
 
     /// Get the next frame of audio (blocking)
-    /// Returns f32 samples normalized to [-1, 1]
     pub fn next_frame(&mut self) -> Option<Vec<f32>> {
         loop {
-            // Try to fill buffer from received data
             while self.buffer.len() < self.frame_samples {
                 match self.receiver.recv() {
-                    Ok(data) => self.buffer.extend_from_slice(&data),
+                    Ok(data) => {
+                        if let Some((from_rate, to_rate)) = self.resample {
+                            let resampled = Self::resample_linear(&data, from_rate, to_rate);
+                            self.buffer.extend_from_slice(&resampled);
+                        } else {
+                            self.buffer.extend_from_slice(&data);
+                        }
+                    }
                     Err(_) => return None,
                 }
             }
 
-            // Extract one frame
             if self.buffer.len() >= self.frame_samples {
                 let frame: Vec<f32> = self.buffer.drain(..self.frame_samples).collect();
                 return Some(frame);
@@ -202,10 +186,8 @@ impl AudioCapture {
 
     /// Try to get the next frame (non-blocking)
     pub fn try_next_frame(&mut self) -> Option<Vec<f32>> {
-        // Drain all available data
         while let Ok(data) = self.receiver.try_recv() {
             if let Some((from_rate, to_rate)) = self.resample {
-                // Resample the incoming data
                 let resampled = Self::resample_linear(&data, from_rate, to_rate);
                 self.buffer.extend_from_slice(&resampled);
             } else {
@@ -213,7 +195,6 @@ impl AudioCapture {
             }
         }
 
-        // Return frame if we have enough samples
         if self.buffer.len() >= self.frame_samples {
             let frame: Vec<f32> = self.buffer.drain(..self.frame_samples).collect();
             Some(frame)
